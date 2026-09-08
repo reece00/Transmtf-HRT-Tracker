@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useTranslation } from '../contexts/LanguageContext';
 import { useDialog } from '../contexts/DialogContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -19,6 +19,7 @@ import {
     Palette,
     Moon,
     Sun,
+    Monitor,
 } from 'lucide-react';
 
 import { decryptData } from '../../logic';
@@ -35,7 +36,7 @@ import ModelInfoModal from '../components/ModelInfoModal';
 import DisclaimerModal from '../components/DisclaimerModal';
 import StatisticsModal from '../components/StatisticsModal';
 import ThemePicker from '../components/ui/ThemePicker';
-import Toggle from '../components/ui/Toggle';
+import type { ThemeMode } from '../contexts/ThemeContext';
 import type { Lang } from '../i18n/translations';
 import flagCN from '../flag_svg/🇨🇳.svg';
 import flagTW from '../flag_svg/🇹🇼.svg';
@@ -54,16 +55,41 @@ const readExtraSyncFields = () => {
         applyE2LearningToCPA: applyE2Raw === '1' || applyE2Raw?.toLowerCase() === 'true',
         applyCPAInhibitionToE2: applyCPARaw === '1' || applyCPARaw?.toLowerCase() === 'true',
         themeColor: localStorage.getItem('hrt-theme-color') || 'sakura',
+        themeMode: localStorage.getItem('hrt-theme-mode') || (darkRaw === '1' || darkRaw === 'true' ? 'dark' : 'light'),
         darkMode: darkRaw === '1' || darkRaw === 'true',
     };
 };
+
+const THEME_MODE_OPTIONS = [
+    ['system', Monitor, 'settings.theme.system'],
+    ['light', Sun, 'settings.theme.light'],
+    ['dark', Moon, 'settings.theme.dark'],
+] as const satisfies readonly (readonly [ThemeMode, typeof Monitor, string])[];
 
 const SettingsPage: React.FC = () => {
     const { t, lang, setLang } = useTranslation();
     const { showDialog } = useDialog();
     const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
     const { events, setEvents, labResults, setLabResults, gelProducts, setGelProducts } = useAppData();
-    const { isDark, setIsDark } = useTheme();
+    const { themeMode, setThemeMode } = useTheme();
+    const themeModeRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+    // APG radio-group keys: arrows move selection and focus together, Home/End
+    // jump to the ends. Space/Enter are already handled by the native button.
+    const handleThemeModeKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+        const last = THEME_MODE_OPTIONS.length - 1;
+        let next = index;
+        switch (e.key) {
+            case 'ArrowRight': case 'ArrowDown': next = index === last ? 0 : index + 1; break;
+            case 'ArrowLeft': case 'ArrowUp': next = index === 0 ? last : index - 1; break;
+            case 'Home': next = 0; break;
+            case 'End': next = last; break;
+            default: return;
+        }
+        e.preventDefault();
+        setThemeMode(THEME_MODE_OPTIONS[next][0]);
+        themeModeRefs.current[next]?.focus();
+    };
 
     const [isImportModalOpen, setIsImportModalOpen] = useState(false);
     const [isPasswordInputOpen, setIsPasswordInputOpen] = useState(false);
@@ -290,17 +316,44 @@ const SettingsPage: React.FC = () => {
                             <ThemePicker />
                         </div>
 
-                        {/* Dark Mode */}
+                        {/* Theme Mode */}
                         <div className="border-t pt-4" style={{ borderColor: 'var(--border-secondary)' }}>
-                            <div className="flex items-center justify-between">
+                            <div className="space-y-3">
                                 <div className="flex items-start gap-3">
-                                    {isDark ? <Moon size={20} style={{ color: 'var(--accent-500)' }} /> : <Sun size={20} style={{ color: 'var(--accent-500)' }} />}
+                                    {themeMode === 'system' ? <Monitor size={20} style={{ color: 'var(--accent-500)' }} /> : themeMode === 'dark' ? <Moon size={20} style={{ color: 'var(--accent-500)' }} /> : <Sun size={20} style={{ color: 'var(--accent-500)' }} />}
                                     <div>
-                                        <p className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t('settings.theme.dark_mode')}</p>
-                                        <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{t('settings.theme.dark_mode_desc')}</p>
+                                        <p className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t('settings.theme.mode')}</p>
+                                        <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{t('settings.theme.mode_desc')}</p>
                                     </div>
                                 </div>
-                                <Toggle checked={isDark} onChange={setIsDark} />
+                                <div className="grid grid-cols-3 gap-1 rounded-xl p-1" style={{ background: 'var(--bg-secondary)' }} role="radiogroup" aria-label={t('settings.theme.mode')}>
+                                    {THEME_MODE_OPTIONS.map(([mode, Icon, labelKey], index) => {
+                                        const active = themeMode === mode;
+                                        return (
+                                            <button
+                                                key={mode}
+                                                type="button"
+                                                role="radio"
+                                                aria-checked={active}
+                                                // A radio group is a single tab stop: only the checked
+                                                // option is reachable by Tab, arrows move within it.
+                                                tabIndex={active ? 0 : -1}
+                                                ref={(el) => { themeModeRefs.current[index] = el; }}
+                                                onClick={() => setThemeMode(mode)}
+                                                onKeyDown={(e) => handleThemeModeKeyDown(e, index)}
+                                                className="flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-300)]"
+                                                style={active ? {
+                                                    color: 'var(--accent-600)',
+                                                    background: 'var(--bg-card)',
+                                                    boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+                                                } : { color: 'var(--text-secondary)' }}
+                                            >
+                                                <Icon size={16} />
+                                                {t(labelKey)}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
                             </div>
                         </div>
                     </div>
