@@ -23,7 +23,9 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
   const [securityPassword, setSecurityPassword] = useState<string | null>(null);
   const [passwordVerificationFailed, setPasswordVerificationFailed] = useState(false);
   const [isAutoVerifying, setIsAutoVerifying] = useState(false); // Track auto-verification state
-  const checkingRef = useRef(false); // Prevent concurrent checks
+  // In-flight check marker keyed by session generation: an old session's check
+  // must never suppress the new session's check (F18 re-review).
+  const checkingRef = useRef<{ generation: number } | null>(null);
   const wasAuthenticatedRef = useRef(false); // Track previous auth state
   const isAuthenticatedRef = useRef(isAuthenticated); // Live auth state for race guards
 
@@ -42,16 +44,18 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
       return;
     }
 
-    // Prevent concurrent checks (fixes StrictMode double-call issue)
-    if (checkingRef.current) {
-      return;
-    }
-
-    checkingRef.current = true;
-
     // Capture the session this check belongs to (F18: guards must detect an
     // account switch, not just a true/false auth flip).
     const generation = getSessionGeneration();
+
+    // Prevent concurrent checks within the SAME session only (fixes StrictMode
+    // double-call issue) — a newer session's check must start immediately even
+    // while an older session's check is still pending.
+    if (checkingRef.current && checkingRef.current.generation === generation) {
+      return;
+    }
+
+    checkingRef.current = { generation };
 
     try {
       const response = await apiClient.getSecurityPasswordStatus();
@@ -108,6 +112,11 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
                   console.error('Failed to clear security password cookie:', error);
                 }
 
+                // F18 re-review: only flag the session this check belongs to —
+                // never poison a newer session's auto-verify with A's failure.
+                if (getSessionGeneration() !== generation) {
+                  return;
+                }
                 setPasswordVerificationFailed(true); // Prevent infinite retries!
               } else {
                 console.warn('Auto-verification failed due to non-auth error, will retry later');
@@ -115,13 +124,21 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
             }
           }
 
-          setIsAutoVerifying(false); // End auto-verification
+          // End auto-verification (only for our own session — a newer session
+          // manages its own flag).
+          if (getSessionGeneration() === generation) {
+            setIsAutoVerifying(false);
+          }
         }
       }
     } catch (error) {
       console.error('Failed to check security password status:', error);
     } finally {
-      checkingRef.current = false;
+      // Only release the marker if it still belongs to this session's check,
+      // so a stale finally cannot clear a newer session's in-flight marker.
+      if (checkingRef.current?.generation === generation) {
+        checkingRef.current = null;
+      }
     }
   }, [isAuthenticated, user, passwordVerificationFailed, getSessionGeneration]);
 
@@ -150,6 +167,12 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
           if (!saved) {
             console.error('Failed to save security password to cookie');
             // Continue anyway, but user will need to re-enter on refresh
+          }
+
+          // F18 re-review: the account may have switched while the PIN cookie
+          // was being written — A's verification must never unlock B's session.
+          if (getSessionGeneration() !== generation) {
+            return { success: false, error: 'Verification aborted: session changed' };
           }
         }
 

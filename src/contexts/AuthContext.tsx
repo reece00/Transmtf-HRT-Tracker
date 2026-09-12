@@ -75,6 +75,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Invalidate any in-flight refresh for the session being torn down.
     sessionGenerationRef.current += 1;
+    // Capture this logout's generation: every post-await cleanup step below
+    // must verify it is still current, so a new login (B) cannot be clobbered
+    // by the tail of A's logout (F18).
+    const generation = sessionGenerationRef.current;
     refreshPromiseRef.current = null;
     // Abort in-flight API requests (sync pulls/pushes) so their results can
     // never land after this session ends (F02).
@@ -103,6 +107,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to logout from server:', error);
       }
 
+      // A login / account switch may have started while the server logout was
+      // in flight. A's remaining cleanup must never hit B's session (F18).
+      if (sessionGenerationRef.current !== generation) {
+        return;
+      }
+
       // Always clear security password cookie
       try {
         await clearSecurityPassword();
@@ -110,8 +120,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to clear security password during logout:', error);
       }
 
-      // Optionally clear local user data
-      if (clearLocalData) {
+      // Optionally clear local user data — still ours to clear only if the
+      // session did not change while the cookie cleanup was running.
+      if (clearLocalData && sessionGenerationRef.current === generation) {
         localStorage.removeItem('hrt-events');
         localStorage.removeItem('hrt-weight');
         localStorage.removeItem('hrt-lab-results');
@@ -156,12 +167,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // if the session (and account) is unchanged when the response arrives.
     const generation = sessionGenerationRef.current;
     const sessionUsername = getStoredValue(USERNAME_STORAGE_KEY);
+    const refreshToken = getStoredValue(REFRESH_TOKEN_STORAGE_KEY);
+    if (!refreshToken) return false;
 
+    // NOTE: checked synchronously above so the IIFE body always reaches an
+    // await — otherwise its `finally` would run before `promise` is assigned
+    // (TDZ ReferenceError) when there is no refresh token.
     const promise = (async () => {
       try {
-        const refreshToken = getStoredValue(REFRESH_TOKEN_STORAGE_KEY);
-        if (!refreshToken) return false;
-
         const response = await apiClient.refreshToken({ refresh_token: refreshToken });
 
         // Stale session (logged out or switched account): never apply old results.
