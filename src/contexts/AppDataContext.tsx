@@ -2,10 +2,10 @@ import React, { createContext, useContext, useState, useEffect, useMemo, ReactNo
 import {
     DoseEvent, LabResult, SimulationResult,
     PersonalModelState, EKFDiagnostics, CalibrationModel, CalibrationMode,
-    runSimulation, createCalibrationInterpolator,
-    replayPersonalModel, computeSimulationWithCI, initPersonalModel,
-    ekfUpdatePersonalModel, isAntiandrogen, GelProductSpec, setCustomGelProducts,
+    createCalibrationInterpolator,
+    initPersonalModel, isAntiandrogen, GelProductSpec, setCustomGelProducts,
 } from '../../logic';
+import { pkWorker, PKWorkerCancelledError } from '../workers/pkWorkerClient';
 import { computeDataHash } from '../utils/dataHash';
 import { GEL_PRODUCTS_KEY, readCustomGelProducts, writeCustomGelProducts } from '../utils/doseForm';
 import { backfillEventWeights, eventsNeedWeightMigration, latestEventWeight, DEFAULT_WEIGHT_KG } from '../utils/weight';
@@ -70,6 +70,12 @@ interface AppDataContextType {
     gelProducts: GelProductSpec[];
     setGelProducts: React.Dispatch<React.SetStateAction<GelProductSpec[]>>;
     resetPersonalModel: () => void;
+    /**
+     * True while any PK compute request (simulation / personal-model replay /
+     * CI bands) is in flight in the worker. Lets UI show a non-blocking
+     * "recalculating…" affordance instead of stale-looking charts (F07).
+     */
+    isComputing: boolean;
     /**
      * Endogenous baseline E2 in pg/mL derived from pre-dose lab results.
      * Non-null when the personal model has accumulated at least one pre-dose
@@ -438,13 +444,56 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
         setCustomGelProducts(gelProducts);
     }, [gelProducts]);
 
+    // --- PK compute orchestration (F07) -------------------------------------
+    // The three heavy computes below (simulation, personal-model replay, CI
+    // bands) run in a Web Worker so large histories don't freeze the main
+    // thread. Each effect captures a monotonically increasing sequence number:
+    // when a newer run of the SAME effect starts it first cancels that kind's
+    // in-flight work (worker termination is the only reliable cross-browser
+    // cancel), and late responses are dropped via the sequence guard so stale
+    // results can never overwrite fresher state.
+    const simulationSeqRef = useRef(0);
+    const personalModelSeqRef = useRef(0);
+    const ciSeqRef = useRef(0);
+    const inflightRef = useRef(0);
+    const [isComputing, setIsComputing] = useState(false);
+
+    // Track in-flight worker requests for isComputing. `p.then(done, done)`
+    // attaches both handlers so the derived promise never rejects unhandled;
+    // the caller's own chain on the returned promise is unaffected.
+    const trackCompute = useCallback(<T,>(p: Promise<T>): Promise<T> => {
+        inflightRef.current += 1;
+        setIsComputing(true);
+        const done = () => {
+            inflightRef.current = Math.max(0, inflightRef.current - 1);
+            if (inflightRef.current === 0) setIsComputing(false);
+        };
+        p.then(done, done);
+        return p;
+    }, []);
+
+    // Cancellation rejections are expected (a newer run superseded this one);
+    // anything else is a real compute failure — log rather than crash render.
+    const handleComputeError = useCallback((err: unknown) => {
+        if (err instanceof PKWorkerCancelledError) return;
+        console.error('PK compute failed:', err);
+    }, []);
+
     // Run simulation when events (or the custom-gel registry) change. Per-event
     // weight is read from events; gel kinetics are resolved from the registry.
+    // The registry is also set synchronously here (cheap) so main-thread
+    // interpolation paths (e.g. OverviewView current values) stay correct.
     useEffect(() => {
+        const seq = ++simulationSeqRef.current;
         setCustomGelProducts(gelProducts);
+        pkWorker.cancel('simulation');
         if (events.length > 0) {
-            const res = runSimulation(events);
-            setSimulation(res);
+            trackCompute(pkWorker.run('simulation', { events, gelProducts }))
+                .then(res => {
+                    if (seq !== simulationSeqRef.current) return;
+                    setSimulation(res);
+                })
+                .catch(handleComputeError);
         } else {
             setSimulation(null);
         }
@@ -453,7 +502,11 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
     // Rebuild personal model whenever events, labResults, or the custom-gel
     // registry change (gel calibration resolves kinetics from the registry).
     useEffect(() => {
+        const seq = ++personalModelSeqRef.current;
         setCustomGelProducts(gelProducts);
+        // Cancel BEFORE the empty-labs early branch so a replay still in flight
+        // from the previous deps cannot land after we've just cleared the model.
+        pkWorker.cancel('personalModel');
         if (labResults.length === 0) {
             setPersonalModel(null);
             setLastDiagnostics(null);
@@ -461,27 +514,14 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
             savePersonalModel(null);
             return;
         }
-
-        // Replay EKF from the prior using all sorted lab results
-        const newModel = replayPersonalModel(events, labResults);
-
-        // Derive last diagnostics from the most recent lab point
-        const sorted = [...labResults].sort((a, b) => a.timeH - b.timeH);
-        const lastLab = sorted[sorted.length - 1];
-
-        // Build prior state (n-1 replayed) to get the update diagnostics
-        const priorModel = labResults.length > 1
-            ? replayPersonalModel(events, sorted.slice(0, -1))
-            : initPersonalModel();
-
-        const { diagnostics } = ekfUpdatePersonalModel(
-            events, priorModel, lastLab,
-            labResults.length > 1 ? sorted[sorted.length - 2].timeH : undefined
-        );
-        setLastDiagnostics(diagnostics);
-
-        setPersonalModel(newModel);
-        savePersonalModel(newModel);
+        trackCompute(pkWorker.run('personalModel', { events, labResults, gelProducts }))
+            .then(({ model, diagnostics }) => {
+                if (seq !== personalModelSeqRef.current) return;
+                setLastDiagnostics(diagnostics);
+                setPersonalModel(model);
+                savePersonalModel(model);
+            })
+            .catch(handleComputeError);
     }, [events, labResults, gelProducts]);
 
     // Recompute CI bands whenever relevant state changes.
@@ -493,6 +533,8 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
     //   personal arrays are empty (keeping the E2 "personal model" UI hidden)
     //   while the antiandrogen map carries the population band.
     useEffect(() => {
+        const seq = ++ciSeqRef.current;
+        pkWorker.cancel('ci');
         if (!simulation) {
             setSimCI(null);
             return;
@@ -501,13 +543,29 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
         const hasAntiandrogen = events.some(e => isAntiandrogen(e.ester));
 
         if (hasE2Personal) {
-            const ci = computeSimulationWithCI(simulation, events, personalModel!, applyE2LearningToCPA, labResults, calibrationModel, applyCPAInhibitionToE2, calibrationMode);
-            setSimCI(ci);
+            trackCompute(pkWorker.run('ci', {
+                simulation, events, model: personalModel!, applyE2LearningToCPA,
+                labResults, calibrationModel, applyCPAInhibitionToE2,
+                calibrationMode, gelProducts,
+            }))
+                .then(ci => {
+                    if (seq !== ciSeqRef.current) return;
+                    setSimCI(ci);
+                })
+                .catch(handleComputeError);
         } else if (hasAntiandrogen) {
             // Population-only path: no learned theta, no adherence coupling. Mode is
             // irrelevant with no labs, but pass it through for consistency.
-            const ci = computeSimulationWithCI(simulation, events, initPersonalModel(), false, [], 'ekf', false, calibrationMode);
-            setSimCI({ ...ci, e2Adjusted: [], ci95Low: [], ci95High: [], ci68Low: [], ci68High: [] });
+            trackCompute(pkWorker.run('ci', {
+                simulation, events, model: initPersonalModel(),
+                applyE2LearningToCPA: false, labResults: [], calibrationModel: 'ekf',
+                applyCPAInhibitionToE2: false, calibrationMode, gelProducts,
+            }))
+                .then(ci => {
+                    if (seq !== ciSeqRef.current) return;
+                    setSimCI({ ...ci, e2Adjusted: [], ci95Low: [], ci95High: [], ci68Low: [], ci68High: [] });
+                })
+                .catch(handleComputeError);
         } else {
             setSimCI(null);
         }
@@ -556,6 +614,7 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
         gelProducts,
         setGelProducts,
         resetPersonalModel,
+        isComputing,
         baselineE2PGmL,
     };
 
