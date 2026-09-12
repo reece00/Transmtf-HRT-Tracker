@@ -464,16 +464,23 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
         });
     }, [events, sim, simCI, baselineE2PGmL]);
 
-    const { minTime, maxTime, now } = useMemo(() => {
+    const { minTime, maxTime } = useMemo(() => {
         const series = rawData.length ? rawData : data;
-        const n = new Date().getTime();
-        if (series.length === 0) return { minTime: n, maxTime: n, now: n };
+        if (series.length === 0) {
+            const n = (nowH ?? Date.now() / 3600000) * 3600000;
+            return { minTime: n, maxTime: n };
+        }
         return {
             minTime: series[0].time,
             maxTime: series[series.length - 1].time,
-            now: n
         };
-    }, [rawData, data]);
+    }, [rawData, data, nowH]);
+
+    // F21: the "now" marker must follow the reactive clock (the nowH prop,
+    // ticked every minute by AppDataContext) — deriving it inside the
+    // data-cached memo above froze the reference line and the current dot at
+    // whatever time the curve data last changed.
+    const now = (nowH ?? Date.now() / 3600000) * 3600000;
 
     // Compute left-axis Y domain from visible E2-related series in current viewport.
     // CI is included but bounded relative to the base curve, to avoid squeezing curves to the floor.
