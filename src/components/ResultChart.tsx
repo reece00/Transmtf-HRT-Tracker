@@ -429,6 +429,28 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
     const data = useMemo(() => downsampleSeries(rawData, MAX_RENDER_POINTS), [rawData]);
     const overviewData = useMemo(() => downsampleSeries(rawData, MAX_OVERVIEW_POINTS), [rawData]);
 
+    // F20: viewport-aware series for the MAIN chart. The global `data` is
+    // downsampled against the whole history, so zooming to 1W of a 1y history
+    // renders only the ~20 global samples falling inside the window and local
+    // peaks are lost. Instead, take the raw points inside the visible window
+    // (plus a small margin so the line does not pop at the edges) and
+    // downsample only that window to the same pixel budget. Pre-init (no
+    // xDomain yet) falls back to the global downsample.
+    const visibleData = useMemo<ChartPoint[]>(() => {
+        if (!xDomain) return data;
+        const margin = (xDomain[1] - xDomain[0]) * 0.02;
+        const lo = xDomain[0] - margin;
+        const hi = xDomain[1] + margin;
+        const windowPoints: ChartPoint[] = [];
+        for (const p of rawData) {
+            if (p.time < lo) continue;
+            if (p.time > hi) break; // rawData is time-sorted
+            windowPoints.push(p);
+        }
+        if (windowPoints.length === 0) return data;
+        return downsampleSeries(windowPoints, MAX_RENDER_POINTS);
+    }, [rawData, xDomain, data]);
+
     const labPoints = useMemo(() => {
         if (!labResults || labResults.length === 0) return [];
         return labResults.map(l => ({
@@ -487,8 +509,10 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
     const yAxisLeft = useMemo(() => {
         const visibleMin = xDomain ? xDomain[0] : minTime;
         const visibleMax = xDomain ? xDomain[1] : maxTime;
-        // Use downsampled data during interactive sliding to reduce per-frame cost.
-        const source = data;
+        // Read the series actually rendered (visibleData) so the computed
+        // domain always matches what is on screen; it is already window-sized,
+        // which also keeps per-frame cost low during interactive sliding.
+        const source = visibleData;
         let basePeak = 0;
         let baseMin = Number.POSITIVE_INFINITY;
         let ciPeakRaw = 0;
@@ -540,13 +564,13 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
         // Leave the raw lower bound to D3: nice() floors it to a round value.
         const lower = minVal > 0 ? minVal * 0.85 : 0;
         return calculateNiceDomain(lower, padded, AXIS_TICK_COUNT, E2_AXIS_FALLBACK_MAX, false);
-    }, [data, labPoints, xDomain, minTime, maxTime, simCI, baselineE2PGmL]);
+    }, [visibleData, labPoints, xDomain, minTime, maxTime, simCI, baselineE2PGmL]);
 
     // Compute right-axis Y domain from visible CPA-related series in current viewport.
     const yAxisRight = useMemo(() => {
         const visibleMin = xDomain ? xDomain[0] : minTime;
         const visibleMax = xDomain ? xDomain[1] : maxTime;
-        const source = data;
+        const source = visibleData;
         let basePeak = 0;
         let ciPeakRaw = 0;
 
@@ -571,7 +595,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
         const peak = Math.max(basePeak, ciPeak, CPA_AXIS_FALLBACK_MAX);
         const padded = Math.max(CPA_AXIS_FALLBACK_MAX, peak * 1.12); // 12% headroom
         return calculateNiceDomain(0, padded, AXIS_TICK_COUNT, CPA_AXIS_FALLBACK_MAX);
-    }, [data, xDomain, minTime, maxTime]);
+    }, [visibleData, xDomain, minTime, maxTime]);
 
     const nowPoint = useMemo(() => {
         if (!sim || data.length === 0) return null;
@@ -791,7 +815,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
 
             <div className="h-[36vh] min-h-[200px] max-h-[420px] md:h-80 lg:h-96 w-full touch-none relative select-none px-2 pb-2">
                 <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={data} margin={{ top: 28, right: 10, bottom: 0, left: 10 }}>
+                    <ComposedChart data={visibleData} margin={{ top: 28, right: 10, bottom: 0, left: 10 }}>
                         <defs>
                             <linearGradient id="colorConc" x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="5%" stopColor="#f6c4d7" stopOpacity={0.18}/>
@@ -881,7 +905,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         {hasPersonalModel && (
                             <>
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="ci95Low"
                                     yAxisId="left"
@@ -894,7 +918,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                                     legendType="none"
                                 />
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="ci95Band"
                                     yAxisId="left"
@@ -913,7 +937,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         {hasPersonalModel && (
                             <>
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="ci68Low"
                                     yAxisId="left"
@@ -926,7 +950,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                                     legendType="none"
                                 />
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="ci68Band"
                                     yAxisId="left"
@@ -944,7 +968,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         {hasPersonalCpaModel && hasPersonalCpaCI && hasCPADoses && (
                             <>
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="cpaCi95Low"
                                     yAxisId="right"
@@ -957,7 +981,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                                     legendType="none"
                                 />
                                 <Area
-                                    data={data}
+                                    data={visibleData}
                                     type="monotone"
                                     dataKey="cpaCi95Band"
                                     yAxisId="right"
@@ -974,7 +998,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         )}
 
                         <Area
-                            data={data}
+                            data={visibleData}
                             type="monotone"
                             dataKey="concE2"
                             yAxisId="left"
@@ -987,7 +1011,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         />
                         {hasCPADoses && (
                         <Area
-                            data={data}
+                            data={visibleData}
                             type="monotone"
                             dataKey="concCPA"
                             yAxisId="right"
@@ -1003,7 +1027,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                         {/* Personal model E2 curve (dashed rose line) */}
                         {hasPersonalModel && (
                             <Area
-                                data={data}
+                                data={visibleData}
                                 type="monotone"
                                 dataKey="concPersonal"
                                 yAxisId="left"
@@ -1021,7 +1045,7 @@ const ResultChart = ({ sim, events, labResults = [], simCI, baselineE2PGmL, nowH
                             only for adherence-coupled compounds (CPA), not BICA. */}
                         {hasPersonalCpaModel && hasCPADoses && aaPersonalized && (
                             <Area
-                                data={data}
+                                data={visibleData}
                                 type="monotone"
                                 dataKey="concPersonalCPA"
                                 yAxisId="right"
