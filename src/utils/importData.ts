@@ -16,7 +16,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { Ester, Route, type DoseEvent, type LabResult } from '../../types';
-import { GEL_PRODUCTS, sanitizeGelProducts, type GelProductSpec } from '../../pk';
+import { GEL_CUSTOM_ID_BASE, GEL_PRODUCTS, sanitizeGelProducts, type GelProductSpec } from '../../pk';
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -41,6 +41,20 @@ export const toFiniteTimeH = (value: unknown): number | null => {
         return Number.isFinite(n) ? n : null;
     }
     return null; // null/undefined/boolean/'' must never become time 0
+};
+
+/**
+ * STRICT numeric parser: a finite number, or a string with non-empty trim that
+ * parses finite. null/undefined/boolean/'' → null (booleans are NOT numbers:
+ * `Number(true) === 1` would silently turn a corrupt flag into a dose/weight).
+ */
+export const toStrictNumber = (value: unknown): number | null => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+    return null;
 };
 
 export const isRoute = (value: unknown): value is Route =>
@@ -78,15 +92,23 @@ export const sanitizeImportedEvents = (raw: unknown, fallbackWeight: number): Sa
         if (!isEster(entry.ester)) { rejected.push({ index, reason: 'unknown ester' }); return; }
         const timeNum = toFiniteTimeH(entry.timeH);
         if (timeNum === null) { rejected.push({ index, reason: 'invalid time' }); return; }
-        const doseNum = toNumber(entry.doseMG);
-        // Dose must be present and finite; negative is meaningless, and 0 is
-        // only well-formed for patchRemove (removing a patch administers 0 mg).
-        if (doseNum === null || doseNum < 0 || (doseNum === 0 && entry.route !== Route.patchRemove)) {
-            rejected.push({ index, reason: 'invalid dose' });
-            return;
+        // Dose is strict: null/''/boolean are rejected, never coerced (Number(true)
+        // is 1). Negative is meaningless; 0 is only well-formed for patchRemove.
+        // A MISSING dose on patchRemove means "removed a patch" → 0 mg.
+        let doseNum: number;
+        if (entry.route === Route.patchRemove && entry.doseMG === undefined) {
+            doseNum = 0;
+        } else {
+            const strictDose = toStrictNumber(entry.doseMG);
+            if (strictDose === null || strictDose < 0 || (strictDose === 0 && entry.route !== Route.patchRemove)) {
+                rejected.push({ index, reason: 'invalid dose' });
+                return;
+            }
+            doseNum = strictDose;
         }
         const extras = isRecord(entry.extras) ? entry.extras : {};
-        const weightNum = toNumber((entry as { weightKG?: unknown }).weightKG);
+        // Invalid/missing weight (including booleans) falls back + counts as migrated.
+        const weightNum = toStrictNumber((entry as { weightKG?: unknown }).weightKG);
         let weightKG: number;
         if (weightNum !== null && weightNum > 0) {
             weightKG = weightNum;
@@ -121,18 +143,23 @@ export interface SanitizedLabResults {
     rejected: RejectedRow[];
     /** Units that were neither 'pg/ml' nor 'pmol/l' — rejected, never guessed. */
     unknownUnitCount: number;
+    /** Lab ids that appeared more than once: later duplicates got a fresh uuid. */
+    duplicateIdCount: number;
 }
 
 export const sanitizeImportedLabResults = (raw: unknown): SanitizedLabResults => {
-    if (!Array.isArray(raw)) return { labs: [], rejected: [], unknownUnitCount: 0 };
+    if (!Array.isArray(raw)) return { labs: [], rejected: [], unknownUnitCount: 0, duplicateIdCount: 0 };
     const rejected: RejectedRow[] = [];
     let unknownUnitCount = 0;
+    let duplicateIdCount = 0;
+    const seenIds = new Set<string>();
     const labs: LabResult[] = [];
     raw.forEach((entry, index) => {
         if (!isRecord(entry)) { rejected.push({ index, reason: 'not an object' }); return; }
         const timeNum = toFiniteTimeH(entry.timeH);
         if (timeNum === null) { rejected.push({ index, reason: 'invalid time' }); return; }
-        const valueNum = toNumber(entry.concValue);
+        // Strict value: null/''/boolean are rejected, never coerced.
+        const valueNum = toStrictNumber(entry.concValue);
         if (valueNum === null) { rejected.push({ index, reason: 'invalid value' }); return; }
         // Accept ONLY the two real units. Silently coercing an unknown unit
         // to 'pmol/l' would fabricate a wrong concentration scale.
@@ -141,9 +168,18 @@ export const sanitizeImportedLabResults = (raw: unknown): SanitizedLabResults =>
             unknownUnitCount += 1;
             return;
         }
-        labs.push({ id: typeof entry.id === 'string' ? entry.id : uuidv4(), timeH: timeNum, concValue: valueNum, unit: entry.unit });
+        // Duplicate lab ids would make an edit-by-id hit multiple rows; keep the
+        // first occurrence and reassign later duplicates a fresh uuid (same
+        // policy as events).
+        let id = typeof entry.id === 'string' ? entry.id : uuidv4();
+        if (seenIds.has(id)) {
+            id = uuidv4();
+            duplicateIdCount += 1;
+        }
+        seenIds.add(id);
+        labs.push({ id, timeH: timeNum, concValue: valueNum, unit: entry.unit });
     });
-    return { labs, rejected, unknownUnitCount };
+    return { labs, rejected, unknownUnitCount, duplicateIdCount };
 };
 
 export interface ParsedImport {
@@ -156,7 +192,7 @@ export interface ParsedImport {
 /** Pick the fallback weight (for legacy rows missing per-dose weight). */
 export const importFallbackWeight = (parsed: unknown, dflt: number): number => {
     if (isRecord(parsed)) {
-        const w = toNumber(parsed.weight);
+        const w = toStrictNumber(parsed.weight);
         if (w !== null && w > 0) return w;
     }
     return dflt;
@@ -172,8 +208,14 @@ export interface ImportPrecheck extends ParsedImport {
         labsRejected: RejectedRow[];
         gelsTotal: number;
         gelsAccepted: number;
-        gelsRejected: number;
+        /** Per-row gel rejections with reasons (mirror of events/labs). */
+        gelsRejected: RejectedRow[];
+        /** Numeric count of rejected gel rows (=== gelsRejected.length). */
+        gelsRejectedCount: number;
+        /** EVENT duplicate ids reassigned to fresh uuids. */
         duplicateIdCount: number;
+        /** LAB duplicate ids reassigned to fresh uuids. */
+        labDuplicateIdCount: number;
         unknownUnitCount: number;
         /** gelProductIds referenced by accepted gel events but found neither in the imported gel list nor among built-in presets. */
         missingGelRefs: number[];
@@ -183,6 +225,23 @@ export interface ImportPrecheck extends ParsedImport {
     /** Non-fatal issues the user must acknowledge before applying. */
     warnings: string[];
 }
+
+/**
+ * Best-effort reason for a gel row that failed the real per-row sanitizer.
+ * Mirrors the hard requirements in pk.ts `sanitizeGelProduct`: numeric id
+ * ≥ GEL_CUSTOM_ID_BASE, then the three non-defaultable rate constants; name
+ * is only a last-resort hint (the sanitizer itself defaults display fields).
+ */
+const gelRejectReason = (row: unknown): string => {
+    if (!isRecord(row)) return 'not an object';
+    if (typeof row.id !== 'number' || !Number.isFinite(row.id)) return 'id not a number';
+    if (row.id < GEL_CUSTOM_ID_BASE) return `id below ${GEL_CUSTOM_ID_BASE}`;
+    if (typeof row.kPenBase !== 'number' || !Number.isFinite(row.kPenBase)) return 'missing kPenBase';
+    if (typeof row.kLoss !== 'number' || !Number.isFinite(row.kLoss)) return 'missing kLoss';
+    if (typeof row.kRel !== 'number' || !Number.isFinite(row.kRel)) return 'missing kRel';
+    if (typeof row.name !== 'string' || row.name.trim() === '') return 'missing name';
+    return 'invalid gel product';
+};
 
 /**
  * Full pre-import validation. Writes NOTHING; returns everything the caller
@@ -198,10 +257,22 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
     let migratedCount = 0;
     let eventsRejected: RejectedRow[] = [];
     let labsRejected: RejectedRow[] = [];
+    let gelsRejected: RejectedRow[] = [];
     let duplicateIdCount = 0;
+    let labDuplicateIdCount = 0;
     let unknownUnitCount = 0;
     let gelsTotal = 0;
-    let gelsRejected = 0;
+    // Sections whose key is present but whose value is not an array (and not
+    // null — null counts as deliberately absent). Treated as absent for data
+    // purposes, but surfaced so a corrupt export doesn't pass silently.
+    const malformed: string[] = [];
+    const typeName = (v: unknown): string => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
+    const noteMalformed = (key: 'events' | 'labResults' | 'gelProducts', value: unknown) => {
+        // undefined = key absent (JSON never produces it); null = deliberately absent.
+        if (value !== undefined && value !== null && !Array.isArray(value)) {
+            malformed.push(`${key}: present but not an array (got ${typeName(value)}); section ignored`);
+        }
+    };
 
     if (Array.isArray(parsed)) {
         // Legacy top-level-array format IS an events list: the section is
@@ -212,6 +283,9 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
         eventsRejected = r.rejected;
         duplicateIdCount = r.duplicateIdCount;
     } else if (isRecord(parsed)) {
+        noteMalformed('events', parsed.events);
+        noteMalformed('labResults', parsed.labResults);
+        noteMalformed('gelProducts', parsed.gelProducts);
         if (Array.isArray(parsed.events)) {
             const r = sanitizeImportedEvents(parsed.events, fallbackWeight);
             events = r.events;
@@ -224,11 +298,31 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
             labResults = r.labs;
             labsRejected = r.rejected;
             unknownUnitCount = r.unknownUnitCount;
+            labDuplicateIdCount = r.duplicateIdCount;
         }
         if (Array.isArray(parsed.gelProducts)) {
             gelsTotal = parsed.gelProducts.length;
+            // Accepted list stays the FULL-LIST sanitize result (identical to
+            // before, including its dup-id drop); rejections are derived by
+            // running the real sanitizer on each row individually so every
+            // dropped row gets a concrete reason.
             gelProducts = sanitizeGelProducts(parsed.gelProducts);
-            gelsRejected = gelsTotal - gelProducts.length;
+            const seenGelIds = new Set<number>();
+            parsed.gelProducts.forEach((row, index) => {
+                if (sanitizeGelProducts([row]).length !== 1) {
+                    gelsRejected.push({ index, reason: gelRejectReason(row) });
+                    return;
+                }
+                // Individually valid but dropped from the full list → duplicate id.
+                // Product ids are registry keys referenced by events, so unlike
+                // events/labs the duplicate row is dropped, NOT reassigned.
+                const id = Math.round((row as { id: unknown }).id as number);
+                if (seenGelIds.has(id)) {
+                    gelsRejected.push({ index, reason: 'duplicate id' });
+                    return;
+                }
+                seenGelIds.add(id);
+            });
         }
     }
 
@@ -247,6 +341,7 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
         }
     }
 
+    const gelsRejectedCount = gelsRejected.length;
     const fatalErrors: string[] = [];
     if (events !== null && eventsRejected.length > 0 && events.length === 0) {
         fatalErrors.push(`events: ${eventsRejected.length} rows, all rejected`);
@@ -254,15 +349,17 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
     if (labResults !== null && labsRejected.length > 0 && labResults.length === 0) {
         fatalErrors.push(`labResults: ${labsRejected.length} rows, all rejected`);
     }
-    if (gelProducts !== null && gelsRejected > 0 && gelsRejected === gelsTotal) {
+    if (gelProducts !== null && gelsRejectedCount > 0 && gelsRejectedCount === gelsTotal) {
         fatalErrors.push(`gelProducts: ${gelsTotal} rows, all rejected`);
     }
 
-    const warnings: string[] = [];
+    const warnings: string[] = [...malformed];
     if (eventsRejected.length > 0) warnings.push(`events: ${eventsRejected.length} row(s) rejected`);
     if (labsRejected.length > 0) warnings.push(`labResults: ${labsRejected.length} row(s) rejected`);
     if (unknownUnitCount > 0) warnings.push(`labResults: ${unknownUnitCount} unknown unit(s) rejected`);
+    if (gelsRejectedCount > 0) warnings.push(`gelProducts: ${gelsRejectedCount} row(s) rejected`);
     if (duplicateIdCount > 0) warnings.push(`events: ${duplicateIdCount} duplicate id(s) reassigned`);
+    if (labDuplicateIdCount > 0) warnings.push(`labResults: ${labDuplicateIdCount} duplicate id(s) reassigned`);
     if (migratedCount > 0) warnings.push(`events: ${migratedCount} row(s) migrated to fallback weight`);
     if (missingGelRefs.length > 0) warnings.push(`events reference missing gelProductId: ${missingGelRefs.join(', ')}`);
 
@@ -281,7 +378,9 @@ export const precheckImportedBackup = (parsed: unknown, fallbackWeight: number):
             gelsTotal,
             gelsAccepted: gelProducts?.length ?? 0,
             gelsRejected,
+            gelsRejectedCount,
             duplicateIdCount,
+            labDuplicateIdCount,
             unknownUnitCount,
             missingGelRefs,
         },
@@ -307,3 +406,25 @@ export const parseImportedBackup = (parsed: unknown, fallbackWeight: number): Pa
  */
 export const importHasContent = (p: ParsedImport): boolean =>
     p.events !== null || p.labResults !== null || p.gelProducts !== null;
+
+/**
+ * Build a salvage ("repaired") copy of a rejected import: ONLY sections that
+ * kept at least one accepted row are included. All-rejected and absent
+ * sections are omitted entirely — never written as explicit empty arrays — so
+ * re-importing the result keeps existing data instead of wiping a section.
+ */
+export const buildRepairedBackup = (precheck: ImportPrecheck): JsonRecord => {
+    const repaired: JsonRecord = {
+        meta: { version: 2, exportedAt: new Date().toISOString(), repaired: true },
+    };
+    if (precheck.events !== null && precheck.stats.eventsAccepted > 0) {
+        repaired.events = precheck.events;
+    }
+    if (precheck.labResults !== null && precheck.stats.labsAccepted > 0) {
+        repaired.labResults = precheck.labResults;
+    }
+    if (precheck.gelProducts !== null && precheck.stats.gelsAccepted > 0) {
+        repaired.gelProducts = precheck.gelProducts;
+    }
+    return repaired;
+};

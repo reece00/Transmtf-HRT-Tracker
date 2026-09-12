@@ -25,7 +25,9 @@ import {
 import { decryptData } from '../../logic';
 import { computeDataHash } from '../utils/dataHash';
 import { writeCustomGelProducts } from '../utils/doseForm';
-import { isRecord, precheckImportedBackup, importHasContent, importFallbackWeight, type ImportPrecheck } from '../utils/importData';
+import { isRecord, precheckImportedBackup, importHasContent, importFallbackWeight, buildRepairedBackup, type ImportPrecheck } from '../utils/importData';
+import type { DoseEvent, LabResult } from '../../types';
+import type { GelProductSpec } from '../../pk';
 import { DEFAULT_WEIGHT_KG, latestEventWeight } from '../utils/weight';
 import { APP_VERSION } from '../constants';
 import CustomSelect from '../components/CustomSelect';
@@ -105,6 +107,47 @@ const SettingsPage: React.FC = () => {
         { value: 'ja', label: '日本語', icon: <img src={flagJP} alt="JP" className="w-5 h-5 rounded-sm object-contain" /> },
     ]), []);
 
+    // Roll back to the snapshot written immediately before the apply phase, so
+    // a failed apply never leaves mixed old/new data behind. Sections missing
+    // from the snapshot are removed rather than restored.
+    const restorePreImportSnapshot = () => {
+        try {
+            const raw = localStorage.getItem('hrt-pre-import-snapshot');
+            if (!raw) return;
+            const snap = JSON.parse(raw) as {
+                events?: unknown;
+                labResults?: unknown;
+                gelProducts?: unknown;
+                weight?: unknown;
+            };
+            if (Array.isArray(snap.events)) {
+                localStorage.setItem('hrt-events', JSON.stringify(snap.events));
+                setEvents(snap.events as DoseEvent[]);
+            } else {
+                localStorage.removeItem('hrt-events');
+            }
+            if (Array.isArray(snap.labResults)) {
+                localStorage.setItem('hrt-lab-results', JSON.stringify(snap.labResults));
+                setLabResults(snap.labResults as LabResult[]);
+            } else {
+                localStorage.removeItem('hrt-lab-results');
+            }
+            if (Array.isArray(snap.gelProducts)) {
+                writeCustomGelProducts(snap.gelProducts as GelProductSpec[]);
+                setGelProducts(snap.gelProducts as GelProductSpec[]);
+            } else {
+                localStorage.removeItem('hrt-gel-products');
+            }
+            if (typeof snap.weight === 'string') {
+                localStorage.setItem('hrt-weight', snap.weight);
+            } else {
+                localStorage.removeItem('hrt-weight');
+            }
+        } catch (rollbackError) {
+            console.error('Rollback from pre-import snapshot failed:', rollbackError);
+        }
+    };
+
     const processImportedData = async (parsed: unknown): Promise<boolean> => {
         try {
             const fallbackWeight = importFallbackWeight(parsed, DEFAULT_WEIGHT_KG);
@@ -158,52 +201,63 @@ const SettingsPage: React.FC = () => {
             }
 
             // Snapshot current data right before applying so the import can be undone.
+            // Includes the legacy weight so a future restore can return it too.
             localStorage.setItem('hrt-pre-import-snapshot', JSON.stringify({
                 events,
                 labResults,
                 gelProducts,
+                weight: localStorage.getItem('hrt-weight'),
                 savedAt: new Date().toISOString(),
             }));
 
-            const nextEvents = newEvents ?? events;
-            const nextLabResults = newLabResults ?? labResults;
+            try {
+                const nextEvents = newEvents ?? events;
+                const nextLabResults = newLabResults ?? labResults;
 
-            if (newEvents !== null) {
-                setEvents(newEvents);
-                localStorage.setItem('hrt-events', JSON.stringify(newEvents));
-                if (newEvents.length > 0) {
-                    localStorage.setItem('hrt-weight', latestEventWeight(newEvents).toString());
+                if (newEvents !== null) {
+                    setEvents(newEvents);
+                    localStorage.setItem('hrt-events', JSON.stringify(newEvents));
+                    if (newEvents.length > 0) {
+                        localStorage.setItem('hrt-weight', latestEventWeight(newEvents).toString());
+                    }
                 }
-            }
 
-            // Only overwrite labs when the file actually carried a labResults
-            // section; a gel-only / events-only backup leaves existing labs intact.
-            if (newLabResults !== null) {
-                setLabResults(newLabResults);
-                localStorage.setItem('hrt-lab-results', JSON.stringify(newLabResults));
-            }
+                // Only overwrite labs when the file actually carried a labResults
+                // section; a gel-only / events-only backup leaves existing labs intact.
+                if (newLabResults !== null) {
+                    setLabResults(newLabResults);
+                    localStorage.setItem('hrt-lab-results', JSON.stringify(newLabResults));
+                }
 
-            // Restore custom gel products so imported gel events resolve their real
-            // kinetics instead of silently falling back to the default product.
-            if (newGelProducts !== null) {
-                setGelProducts(newGelProducts);
-                writeCustomGelProducts(newGelProducts);
-            }
+                // Restore custom gel products so imported gel events resolve their real
+                // kinetics instead of silently falling back to the default product.
+                if (newGelProducts !== null) {
+                    setGelProducts(newGelProducts);
+                    writeCustomGelProducts(newGelProducts);
+                }
 
-            const lastModified = new Date().toISOString();
-            localStorage.setItem('hrt-last-modified', lastModified);
-            localStorage.setItem('hrt-last-data-updated', lastModified);
-            const langValue = localStorage.getItem('hrt-lang') || lang;
-            const dataHash = computeDataHash({
-                events: nextEvents,
-                weight: latestEventWeight(nextEvents),
-                labResults: nextLabResults,
-                lang: langValue,
-                gelProducts: newGelProducts ?? gelProducts,
-                ...readExtraSyncFields(),
-            });
-            localStorage.setItem('hrt-data-hash', dataHash);
-            window.dispatchEvent(new CustomEvent('hrt-local-data-updated', { detail: { key: 'hrt-import', lastModified } }));
+                const lastModified = new Date().toISOString();
+                localStorage.setItem('hrt-last-modified', lastModified);
+                localStorage.setItem('hrt-last-data-updated', lastModified);
+                const langValue = localStorage.getItem('hrt-lang') || lang;
+                const dataHash = computeDataHash({
+                    events: nextEvents,
+                    weight: latestEventWeight(nextEvents),
+                    labResults: nextLabResults,
+                    lang: langValue,
+                    gelProducts: newGelProducts ?? gelProducts,
+                    ...readExtraSyncFields(),
+                });
+                localStorage.setItem('hrt-data-hash', dataHash);
+                window.dispatchEvent(new CustomEvent('hrt-local-data-updated', { detail: { key: 'hrt-import', lastModified } }));
+            } catch (applyError) {
+                // Any failure mid-apply (storage full, hash error, ...) must not
+                // leave a half-imported backup behind: roll back to the snapshot.
+                console.error('Import failed during apply; rolling back.', applyError);
+                restorePreImportSnapshot();
+                showDialog('alert', t('drawer.import_error'));
+                return false;
+            }
 
             if (migratedCount > 0) {
                 showDialog('alert', `${t('migration.per_dose_weight')}\n\n${t('settings.import_snapshot_hint')}`);
@@ -300,22 +354,13 @@ const SettingsPage: React.FC = () => {
     };
 
     // Salvage path after a fatal precheck: a copy containing ONLY the sections
-    // that still have importable rows. Sections that lost every row are omitted
-    // entirely, so re-importing the copy keeps existing data instead of wiping
-    // the section with an explicit empty array.
+    // that still have importable rows (buildRepairedBackup). Sections that lost
+    // every row are omitted entirely, so re-importing the copy keeps existing
+    // data instead of wiping the section with an explicit empty array.
     const downloadRepairedCopy = (precheck: ImportPrecheck) => {
-        const repaired: Record<string, unknown> = {
-            meta: { version: 2, exportedAt: new Date().toISOString(), repaired: true },
-        };
-        if (precheck.events !== null && precheck.stats.eventsAccepted > 0) {
-            repaired.weight = latestEventWeight(precheck.events);
-            repaired.events = precheck.events;
-        }
-        if (precheck.labResults !== null && precheck.stats.labsAccepted > 0) {
-            repaired.labResults = precheck.labResults;
-        }
-        if (precheck.gelProducts !== null && precheck.stats.gelsAccepted > 0) {
-            repaired.gelProducts = precheck.gelProducts;
+        const repaired = buildRepairedBackup(precheck);
+        if (Array.isArray(repaired.events) && repaired.events.length > 0) {
+            repaired.weight = latestEventWeight(repaired.events as DoseEvent[]);
         }
         downloadFile(JSON.stringify(repaired, null, 2), 'hrt-repaired-backup.json');
     };
