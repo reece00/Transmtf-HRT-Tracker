@@ -121,6 +121,12 @@ export const TRANSLATIONS_BASE = {
         "import.decrypt_error": "解密失败，密码错误或数据损坏。",
         "import.overwrite_confirm": "导入将覆盖本地数据并同步到云端，无法找回。是否继续？",
         "import.overwrite_confirm_local": "导入将覆盖本地数据，无法找回。是否继续？",
+        "import.fatal_title": "备份包含无法导入的损坏数据，已取消导入。原始数据未被修改。",
+        "import.fatal_detail": "{section} 共 {total} 条，全部无法导入（{reasons}）。",
+        "import.export_repaired": "导出可用部分",
+        "import.warnings_detail": "部分数据行被跳过：{details}",
+        "import.proceed_confirm": "仍要继续导入吗？",
+        "import.clear_events_confirm": "该备份的用药记录为空，继续导入将清空当前全部用药记录。确定继续？",
         "qr.encrypt_label": "加密",
 
         "btn.add": "新增用药",
@@ -302,6 +308,7 @@ export const TRANSLATIONS_BASE = {
 
         "settings.group.general": "常规设置",
         "settings.group.data": "数据管理",
+        "settings.import_snapshot_hint": "导入前的数据已保存到本地快照。",
         "settings.group.about": "关于",
         "settings.version": "版本号",
 
@@ -873,6 +880,12 @@ export const TRANSLATIONS_BASE = {
         "import.decrypt_error": "Decryption failed. Wrong password or corrupted data.",
         "import.overwrite_confirm": "Importing will overwrite local data and sync to the cloud. This cannot be undone. Continue?",
         "import.overwrite_confirm_local": "Importing will overwrite local data. This cannot be undone. Continue?",
+        "import.fatal_title": "The backup contains corrupted data and cannot be imported. The import was cancelled. Your original data was not modified.",
+        "import.fatal_detail": "{section}: {total} entries, all rejected ({reasons}).",
+        "import.export_repaired": "Export usable part",
+        "import.warnings_detail": "Some data rows were skipped: {details}",
+        "import.proceed_confirm": "Continue importing anyway?",
+        "import.clear_events_confirm": "This backup has no dose events. Continuing the import will clear all current dose events. Continue?",
         "qr.encrypt_label": "Encrypt",
 
         "btn.add": "Add Dose",
@@ -1054,6 +1067,7 @@ export const TRANSLATIONS_BASE = {
 
         "settings.group.general": "General",
         "settings.group.data": "Data Management",
+        "settings.import_snapshot_hint": "A snapshot of your data was saved locally before the import.",
         "settings.group.about": "About",
         "settings.version": "Version",
 

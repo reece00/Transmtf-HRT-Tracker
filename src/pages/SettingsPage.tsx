@@ -25,7 +25,7 @@ import {
 import { decryptData } from '../../logic';
 import { computeDataHash } from '../utils/dataHash';
 import { writeCustomGelProducts } from '../utils/doseForm';
-import { isRecord, parseImportedBackup, importHasContent, importFallbackWeight } from '../utils/importData';
+import { isRecord, precheckImportedBackup, importHasContent, importFallbackWeight, type ImportPrecheck } from '../utils/importData';
 import { DEFAULT_WEIGHT_KG, latestEventWeight } from '../utils/weight';
 import { APP_VERSION } from '../constants';
 import CustomSelect from '../components/CustomSelect';
@@ -105,23 +105,75 @@ const SettingsPage: React.FC = () => {
         { value: 'ja', label: '日本語', icon: <img src={flagJP} alt="JP" className="w-5 h-5 rounded-sm object-contain" /> },
     ]), []);
 
-    const processImportedData = (parsed: unknown): boolean => {
+    const processImportedData = async (parsed: unknown): Promise<boolean> => {
         try {
             const fallbackWeight = importFallbackWeight(parsed, DEFAULT_WEIGHT_KG);
-            const { events: newEvents, labResults: newLabResults, gelProducts: newGelProducts, migratedCount } =
-                parseImportedBackup(parsed, fallbackWeight);
+            const precheck = precheckImportedBackup(parsed, fallbackWeight);
+            const { events: newEvents, labResults: newLabResults, gelProducts: newGelProducts, migratedCount } = precheck;
 
-            if (!importHasContent({ events: newEvents, labResults: newLabResults, gelProducts: newGelProducts, migratedCount })) {
+            if (!importHasContent(precheck)) {
                 throw new Error('No valid entries');
             }
 
-            const nextEvents = newEvents.length > 0 ? newEvents : events;
+            // Fatal: a non-empty section whose rows were ALL rejected is ambiguous
+            // corruption. Abort by default and write NOTHING; offer a download of
+            // just the accepted rows so the user can salvage them.
+            if (precheck.fatalErrors.length > 0) {
+                const reasonList = (rows: { index: number; reason: string }[]) =>
+                    [...new Set(rows.map(r => r.reason))].join(', ');
+                const fatalLines = precheck.fatalErrors.map((entry) => {
+                    const section = entry.split(':')[0];
+                    const total = section === 'events' ? precheck.stats.eventsTotal
+                        : section === 'labResults' ? precheck.stats.labsTotal
+                        : precheck.stats.gelsTotal;
+                    const reasons = section === 'events' ? reasonList(precheck.stats.eventsRejected)
+                        : section === 'labResults' ? reasonList(precheck.stats.labsRejected)
+                        : 'invalid gel product';
+                    return t('import.fatal_detail')
+                        .replace('{section}', section)
+                        .replace('{total}', String(total))
+                        .replace('{reasons}', reasons);
+                });
+                const fatalMessage = [t('import.fatal_title'), ...fatalLines].join('\n\n');
+                const choice = await showDialog('alert', fatalMessage, { thirdOption: t('import.export_repaired') });
+                if (choice === 'third') {
+                    downloadRepairedCopy(precheck);
+                }
+                return false;
+            }
+
+            // Non-fatal issues (skipped rows, reassigned duplicate ids, migrated
+            // weights, missing gel refs, rejected units) need an explicit ack.
+            if (precheck.warnings.length > 0) {
+                const warningMessage = `${t('import.warnings_detail').replace('{details}', precheck.warnings.join('; '))}\n\n${t('import.proceed_confirm')}`;
+                const choice = await showDialog('confirm', warningMessage);
+                if (choice !== 'confirm') return false;
+            }
+
+            // An explicit `events: []` section means CLEAR ALL dose events — a
+            // destructive clear gets its own dedicated confirm (F17).
+            if (newEvents !== null && newEvents.length === 0) {
+                const choice = await showDialog('confirm', t('import.clear_events_confirm'));
+                if (choice !== 'confirm') return false;
+            }
+
+            // Snapshot current data right before applying so the import can be undone.
+            localStorage.setItem('hrt-pre-import-snapshot', JSON.stringify({
+                events,
+                labResults,
+                gelProducts,
+                savedAt: new Date().toISOString(),
+            }));
+
+            const nextEvents = newEvents ?? events;
             const nextLabResults = newLabResults ?? labResults;
 
-            if (newEvents.length > 0) {
+            if (newEvents !== null) {
                 setEvents(newEvents);
                 localStorage.setItem('hrt-events', JSON.stringify(newEvents));
-                localStorage.setItem('hrt-weight', latestEventWeight(newEvents).toString());
+                if (newEvents.length > 0) {
+                    localStorage.setItem('hrt-weight', latestEventWeight(newEvents).toString());
+                }
             }
 
             // Only overwrite labs when the file actually carried a labResults
@@ -154,9 +206,9 @@ const SettingsPage: React.FC = () => {
             window.dispatchEvent(new CustomEvent('hrt-local-data-updated', { detail: { key: 'hrt-import', lastModified } }));
 
             if (migratedCount > 0) {
-                showDialog('alert', t('migration.per_dose_weight'));
+                showDialog('alert', `${t('migration.per_dose_weight')}\n\n${t('settings.import_snapshot_hint')}`);
             } else {
-                showDialog('alert', t('drawer.import_success'));
+                showDialog('alert', `${t('drawer.import_success')}\n\n${t('settings.import_snapshot_hint')}`);
             }
             return true;
         } catch (error) {
@@ -245,6 +297,27 @@ const SettingsPage: React.FC = () => {
         link.download = filename;
         link.click();
         URL.revokeObjectURL(url);
+    };
+
+    // Salvage path after a fatal precheck: a copy containing ONLY the sections
+    // that still have importable rows. Sections that lost every row are omitted
+    // entirely, so re-importing the copy keeps existing data instead of wiping
+    // the section with an explicit empty array.
+    const downloadRepairedCopy = (precheck: ImportPrecheck) => {
+        const repaired: Record<string, unknown> = {
+            meta: { version: 2, exportedAt: new Date().toISOString(), repaired: true },
+        };
+        if (precheck.events !== null && precheck.stats.eventsAccepted > 0) {
+            repaired.weight = latestEventWeight(precheck.events);
+            repaired.events = precheck.events;
+        }
+        if (precheck.labResults !== null && precheck.stats.labsAccepted > 0) {
+            repaired.labResults = precheck.labResults;
+        }
+        if (precheck.gelProducts !== null && precheck.stats.gelsAccepted > 0) {
+            repaired.gelProducts = precheck.gelProducts;
+        }
+        downloadFile(JSON.stringify(repaired, null, 2), 'hrt-repaired-backup.json');
     };
 
     const handleExport = () => {
