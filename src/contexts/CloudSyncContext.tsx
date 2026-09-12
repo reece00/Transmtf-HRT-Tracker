@@ -88,7 +88,7 @@ function pullWouldClearLocalList(localData: Record<string, any>, cloudData: Reco
 }
 
 export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user, getSessionGeneration } = useAuth();
   const { hasSecurityPassword, isVerified, securityPassword, passwordVerificationFailed } = useSecurityPassword();
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
@@ -98,6 +98,12 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isSyncingRef = useRef(false);
   const conflictPendingRef = useRef(false);
+  // Live view of the authed account so post-await checks in async callbacks
+  // compare against the CURRENT identity, not a stale closure (F02).
+  const userRef = useRef(user);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   // ── common guards ──
   const canSync = useCallback(() => {
@@ -203,6 +209,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     lastModified: string;
     lastDataUpdated?: string | null;
   }) => {
+    // F02: stamp results only if the session that issued the push is still
+    // current when the response arrives.
+    const generation = getSessionGeneration();
+
     const response = await apiClient.updateUserData({
       data: {
         ...localData,
@@ -210,6 +220,11 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       },
       password: hasSecurityPassword ? securityPassword : undefined,
     });
+
+    if (getSessionGeneration() !== generation) {
+      // Logged out / switched account mid-push: discard silently.
+      return false;
+    }
 
     if (response.success) {
       const now = new Date();
@@ -242,7 +257,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setSyncError(response.error || 'Failed to sync to cloud');
     return false;
-  }, [hasSecurityPassword, securityPassword]);
+  }, [hasSecurityPassword, securityPassword, getSessionGeneration]);
 
   const shouldPullFromCloud = useCallback(() => {
     const lastPull = localStorage.getItem(LAST_PULL_TIME_KEY);
@@ -259,6 +274,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setLastSyncTime(null);
     }
   }, [isAuthenticated]);
+
+  // A pending conflict belongs to the session that raised it. On logout or
+  // account switch it must not linger over the new session (F02).
+  useEffect(() => {
+    setPendingConflict(null);
+    conflictPendingRef.current = false;
+  }, [isAuthenticated, user?.username]);
 
   // ── apply cloud data to local ──
   const applyCloudToLocal = useCallback((data: any, localData: Record<string, any>, fallbackTimestamp?: string) => {
@@ -324,6 +346,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const performSync = useCallback(async () => {
     if (!canSync()) return;
 
+    // F02: bind this sync to the session (and account) that started it.
+    const generation = getSessionGeneration();
+    const username = userRef.current?.username ?? null;
+
     isSyncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
@@ -333,6 +359,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const response = await apiClient.getUserData({
         password: hasSecurityPassword ? securityPassword : undefined,
       });
+
+      // The session that started this sync may be over (logout / account
+      // switch) while the request was in flight. A stale response must never
+      // touch local state, storage, conflict UI, sync baselines or sync time.
+      if (getSessionGeneration() !== generation || (userRef.current?.username ?? null) !== username) {
+        return;
+      }
 
       const localData = getLocalDataSnapshot();
       const now = new Date();
@@ -510,7 +543,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [canSync, hasSecurityPassword, securityPassword, getLocalDataSnapshot, pushLocalDataToCloud, applyCloudToLocal]);
+  }, [canSync, hasSecurityPassword, securityPassword, getLocalDataSnapshot, pushLocalDataToCloud, applyCloudToLocal, getSessionGeneration]);
 
   // ── Resolve conflict ──
   const resolveConflict = useCallback(async (
@@ -519,6 +552,8 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   ) => {
     if (!pendingConflict) return;
 
+    // F02: a conflict resolution belongs to the session that raised it.
+    const generation = getSessionGeneration();
     const { localData, cloudData } = pendingConflict;
     const now = new Date().toISOString();
 
@@ -550,6 +585,11 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       const syncNow = new Date();
+      if (getSessionGeneration() !== generation) {
+        // Session changed while resolving — skip all stamps; the finally
+        // block still releases the conflict/sync locks.
+        return;
+      }
       setLastSyncTime(syncNow);
       localStorage.setItem(LAST_SYNC_TIME_KEY, syncNow.toISOString());
       localStorage.setItem(LAST_PULL_TIME_KEY, syncNow.toISOString());
@@ -562,7 +602,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [pendingConflict, pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot]);
+  }, [pendingConflict, pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot, getSessionGeneration]);
 
   // ── Watch for local data changes → trigger unified sync ──
   useEffect(() => {

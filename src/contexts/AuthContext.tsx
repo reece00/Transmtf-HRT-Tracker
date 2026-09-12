@@ -76,6 +76,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Invalidate any in-flight refresh for the session being torn down.
     sessionGenerationRef.current += 1;
     refreshPromiseRef.current = null;
+    // Abort in-flight API requests (sync pulls/pushes) so their results can
+    // never land after this session ends (F02).
+    apiClient.cancelInflightRequests();
 
     setIsLoggingOut(true);
     setLogoutInProgress(true);
@@ -294,6 +297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // New session: invalidate any in-flight auth tasks from a previous session.
       sessionGenerationRef.current += 1;
       refreshPromiseRef.current = null;
+      apiClient.cancelInflightRequests();
 
       setAccessToken(access_token);
       setUser({ username });
@@ -322,6 +326,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // New session: invalidate any in-flight auth tasks from a previous session.
       sessionGenerationRef.current += 1;
       refreshPromiseRef.current = null;
+      apiClient.cancelInflightRequests();
 
       setAccessToken(access_token);
       setUser({ username });
@@ -343,6 +348,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // New session: invalidate any in-flight auth tasks from a previous session.
     sessionGenerationRef.current += 1;
     refreshPromiseRef.current = null;
+    apiClient.cancelInflightRequests();
 
     setAccessToken(access_token);
     setUser({ username, displayName, avatarUrl });

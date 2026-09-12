@@ -42,6 +42,7 @@ class ApiClient {
   private refreshTokenCallback: (() => Promise<boolean>) | null = null;
   private isRefreshing: boolean = false;
   private refreshTimeoutMs: number = 10000; // 10 second timeout for token refresh
+  private activeControllers: Set<AbortController> = new Set();
   private requestQueue: Array<{
     execute: () => Promise<any>;
     resolve: (value: any) => void;
@@ -58,6 +59,43 @@ class ApiClient {
 
   setRefreshTokenCallback(callback: () => Promise<boolean>) {
     this.refreshTokenCallback = callback;
+  }
+
+  /**
+   * Abort every in-flight request (e.g. on logout / account switch, F02).
+   * Aborted requests reject with an AbortError inside request()/uploadAvatar(),
+   * which convert it to a normal failed ApiResponse — combined with the
+   * session-generation checks in the sync layer this guarantees no stale
+   * response can be applied after the session that issued it is gone.
+   */
+  cancelInflightRequests() {
+    const controllers = [...this.activeControllers];
+    this.activeControllers.clear();
+    for (const controller of controllers) {
+      controller.abort();
+    }
+  }
+
+  /** Wire an externally-owned AbortSignal into a per-request controller. */
+  private linkExternalSignal(controller: AbortController, externalSignal?: AbortSignal) {
+    if (!externalSignal) return;
+    if (externalSignal.aborted) {
+      controller.abort();
+      return;
+    }
+    const onAbort = () => controller.abort();
+    externalSignal.addEventListener('abort', onAbort, { once: true });
+    const unlink = () => externalSignal.removeEventListener('abort', onAbort);
+    // Persist the unlink fn so request()/uploadAvatar() can detach after settle.
+    (controller as AbortController & { __unlink?: () => void }).__unlink = unlink;
+  }
+
+  private detachExternalSignal(controller: AbortController) {
+    const unlink = (controller as AbortController & { __unlink?: () => void }).__unlink;
+    if (unlink) {
+      unlink();
+      delete (controller as AbortController & { __unlink?: () => void }).__unlink;
+    }
   }
 
   /**
@@ -171,7 +209,8 @@ class ApiClient {
     endpoint: string,
     options: RequestInit = {},
     timeout: number = 30000,
-    hasRetried: boolean = false
+    hasRetried: boolean = false,
+    externalSignal?: AbortSignal
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${endpoint}`;
     // Only set Content-Type for requests with a body to avoid unnecessary CORS preflights on GETs
@@ -200,6 +239,8 @@ class ApiClient {
     }
 
     const controller = new AbortController();
+    this.linkExternalSignal(controller, externalSignal);
+    this.activeControllers.add(controller);
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
@@ -231,7 +272,7 @@ class ApiClient {
           if (this.isRefreshing) {
             return new Promise((resolve, reject) => {
               this.requestQueue.push({
-                execute: () => this.request<T>(endpoint, options, timeout, true),
+                execute: () => this.request<T>(endpoint, options, timeout, true, externalSignal),
                 resolve,
                 reject,
               });
@@ -293,6 +334,10 @@ class ApiClient {
         success: false,
         error: 'Network error',
       };
+    } finally {
+      clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
+      this.detachExternalSignal(controller);
     }
   }
 
@@ -362,18 +407,18 @@ class ApiClient {
     return this.request<SecurityPasswordStatusResponse>('/user/security-password/status');
   }
 
-  async getUserData(data?: GetUserDataRequest): Promise<ApiResponse<UserDataResponse>> {
+  async getUserData(data?: GetUserDataRequest, externalSignal?: AbortSignal): Promise<ApiResponse<UserDataResponse>> {
     return this.request<UserDataResponse>('/user/data', {
       method: 'POST',
       body: data ? JSON.stringify(data) : JSON.stringify({}),
-    });
+    }, 30000, false, externalSignal);
   }
 
-  async updateUserData(data: UpdateUserDataRequest): Promise<ApiResponse<void>> {
+  async updateUserData(data: UpdateUserDataRequest, externalSignal?: AbortSignal): Promise<ApiResponse<void>> {
     return this.request<void>('/user/data', {
       method: 'PUT',
       body: JSON.stringify(data),
-    });
+    }, 30000, false, externalSignal);
   }
 
   // Share APIs
@@ -416,7 +461,7 @@ class ApiClient {
   }
 
   // Avatar APIs
-  async uploadAvatar(file: File, timeout: number = 30000, hasRetried: boolean = false): Promise<ApiResponse<UploadAvatarResponse>> {
+  async uploadAvatar(file: File, timeout: number = 30000, hasRetried: boolean = false, externalSignal?: AbortSignal): Promise<ApiResponse<UploadAvatarResponse>> {
     const formData = new FormData();
     formData.append('avatar', file);
 
@@ -428,6 +473,8 @@ class ApiClient {
     }
 
     const controller = new AbortController();
+    this.linkExternalSignal(controller, externalSignal);
+    this.activeControllers.add(controller);
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
@@ -455,7 +502,7 @@ class ApiClient {
           if (this.isRefreshing) {
             return new Promise((resolve, reject) => {
               this.requestQueue.push({
-                execute: () => this.uploadAvatar(file, timeout, true),
+                execute: () => this.uploadAvatar(file, timeout, true, externalSignal),
                 resolve,
                 reject,
               });
@@ -517,6 +564,10 @@ class ApiClient {
         success: false,
         error: 'Network error',
       };
+    } finally {
+      clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
+      this.detachExternalSignal(controller);
     }
   }
 
