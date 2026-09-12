@@ -68,6 +68,7 @@ export {
     replayPersonalModelTimeline,
     computeCPAE2InhibitionFactor,
     computeSimulationWithCI,
+    PERSONAL_E2_CEILING_PGML,
     type ResidualAnchor,
     type PersonalModelState,
     type PersonalSnapshot,

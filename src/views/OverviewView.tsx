@@ -5,7 +5,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import ResultChart from '../components/ResultChart';
 import ShareImageModal from '../components/ShareImageModal';
 import { formatTime } from '../utils/helpers';
-import { DoseEvent, SimulationResult, LabResult, Route, Ester, ExtraKey, SL_TIER_ORDER, interpolateConcentration_E2, interpolateCompoundConcentration, isAntiandrogen, pickPrimaryAntiandrogen, ANTIANDROGENS, formatAntiandrogenConc, convertToPgMl } from '../../logic';
+import { DoseEvent, SimulationResult, LabResult, Route, Ester, ExtraKey, SL_TIER_ORDER, interpolateConcentration_E2, interpolateCompoundConcentration, isAntiandrogen, pickPrimaryAntiandrogen, ANTIANDROGENS, formatAntiandrogenConc, convertToPgMl, PERSONAL_E2_CEILING_PGML } from '../../logic';
 
 /** Convert hex color string to "r,g,b" for use in rgba() */
 function hexToRgb(hex: string): string {
@@ -247,13 +247,22 @@ const OverviewView: React.FC<OverviewViewProps> = ({
     return null;
   }, [hasDoseHistory, hasPersonalModel, baselineE2PGmL, labResults]);
 
+  // F13: the personal estimate is a {value, capped} structure, not a nullable
+  // number. At the model ceiling (5000) the value is REAL but bounded — the
+  // headline must stay sourced from the personal curve (rendered as ≥ ceiling)
+  // instead of silently swapping in the raw population value while the CI band
+  // keeps showing personal-model intervals.
   const personalLevel = useMemo(() => {
     if (!hasPersonalModel) return null;
     const v = interpAt(simCI!.timeH, simCI!.e2Adjusted, h);
-    return (v > 0 && v < 5000) ? v : null;
+    if (!Number.isFinite(v) || v <= 0) return null; // 无法估计 → fall back below
+    return v >= PERSONAL_E2_CEILING_PGML ? { value: v, capped: true as const } : { value: v, capped: false as const };
   }, [hasPersonalModel, simCI, h]);
 
-  const currentLevel = personalLevel ?? (rawLevel || baselineLevel || 0);
+  const personalCapped = personalLevel?.capped ?? false;
+  const currentLevel = personalLevel
+    ? personalLevel.value
+    : (rawLevel || baselineLevel || 0);
 
   const currentCI = useMemo(() => {
     if (!hasPersonalModel) return null;
@@ -311,15 +320,17 @@ const OverviewView: React.FC<OverviewViewProps> = ({
     return latest;
   }, [events, h]);
 
-  // Latest non-oral estradiol dose (injection / sublingual / gel / patch
-  // apply). Patch-remove events are excluded because they represent removal,
-  // not an administration the user would think of as "the last dose". Future
-  // events are also excluded (see lastCPADose).
+  // Latest estradiol dose (injection / sublingual / gel / patch apply / oral).
+  // Filtered by COMPOUND, not route (F08): oral estradiol is still estradiol,
+  // and excluding the whole oral route made users with only oral records see
+  // "no recent dose" despite having taken one. Anti-androgens (CPA/BICA) are
+  // excluded because they are not estradiol. Patch-remove events are excluded
+  // because they represent removal, not an administration the user would think
+  // of as "the last dose". Future events are also excluded (see lastCPADose).
   const lastE2Dose = useMemo<DoseEvent | null>(() => {
     let latest: DoseEvent | null = null;
     for (const ev of events) {
       if (isAntiandrogen(ev.ester)) continue;
-      if (ev.route === Route.oral) continue;
       if (ev.route === Route.patchRemove) continue;
       if (ev.timeH > h) continue;
       if (!latest || ev.timeH > latest.timeH) latest = ev;
@@ -459,6 +470,7 @@ const OverviewView: React.FC<OverviewViewProps> = ({
                     <>
                       <span className="text-4xl md:text-5xl font-black tracking-tight"
                         style={{ color: 'var(--accent-500)' }}>
+                        {personalCapped && <span style={{ color: 'var(--accent-300)' }}>≥ </span>}
                         {formatHeadlineE2(currentLevel)}
                       </span>
                       <span className="text-sm md:text-base font-bold mb-1"
@@ -500,7 +512,7 @@ const OverviewView: React.FC<OverviewViewProps> = ({
                       {t('chart.personal_model')}
                     </span>
                     <span className="text-[10px] font-semibold" style={{ color: 'var(--accent-500)' }}>
-                      {personalLevel.toFixed(1)} pg/mL
+                      {personalLevel.capped && '≥ '}{personalLevel.value.toFixed(1)} pg/mL
                     </span>
                   </div>
                 )}

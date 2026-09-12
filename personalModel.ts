@@ -81,6 +81,8 @@ const EKF_EPS_CPA = 0.001;
 const EKF_CHI2_95 = 3.841;
 const EKF_DELTA_K = 0.01;
 const EKF_CI_MAX_E2 = 5000;
+/** Model ceiling for the personalised E2 curve (pg/mL). Exported so display layers (OverviewView) can flag "at/above ceiling" instead of silently swapping sources (F13). */
+export const PERSONAL_E2_CEILING_PGML = EKF_CI_MAX_E2;
 const EKF_SIGMA_RESIDUAL_LOG = 0.27;
 const EKF_Q_REF_PERIOD_H = 30 * 24;
 
