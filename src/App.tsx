@@ -1,5 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import './index.css';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { DialogProvider } from './contexts/DialogContext';
 import { AppDataProvider } from './contexts/AppDataContext';

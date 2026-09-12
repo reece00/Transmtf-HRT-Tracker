@@ -39,22 +39,8 @@ export default defineConfig(({ mode }) => {
             ]
           },
           workbox: {
-            runtimeCaching: [
-              {
-                urlPattern: /^https:\/\/cdn\.tailwindcss\.com\/.*/i,
-                handler: 'CacheFirst',
-                options: {
-                  cacheName: 'tailwindcss-cache',
-                  expiration: {
-                    maxEntries: 10,
-                    maxAgeSeconds: 60 * 60 * 24 * 365 // <== 365 days
-                  },
-                  cacheableResponse: {
-                    statuses: [0, 200]
-                  }
-                }
-              }
-            ]
+            // Tailwind CSS is built locally (tailwind.config.js + postcss.config.js);
+            // the old cdn.tailwindcss.com runtime cache was removed with the CDN.
           }
         })
       ],

@@ -119,6 +119,9 @@ const SettingsPage: React.FC = () => {
                 labResults?: unknown;
                 gelProducts?: unknown;
                 weight?: unknown;
+                lastModified?: unknown;
+                lastDataUpdated?: unknown;
+                dataHash?: unknown;
             };
             if (Array.isArray(snap.events)) {
                 localStorage.setItem('hrt-events', JSON.stringify(snap.events));
@@ -142,6 +145,21 @@ const SettingsPage: React.FC = () => {
                 localStorage.setItem('hrt-weight', snap.weight);
             } else {
                 localStorage.removeItem('hrt-weight');
+            }
+            if (typeof snap.lastModified === 'string') {
+                localStorage.setItem('hrt-last-modified', snap.lastModified);
+            } else {
+                localStorage.removeItem('hrt-last-modified');
+            }
+            if (typeof snap.lastDataUpdated === 'string') {
+                localStorage.setItem('hrt-last-data-updated', snap.lastDataUpdated);
+            } else {
+                localStorage.removeItem('hrt-last-data-updated');
+            }
+            if (typeof snap.dataHash === 'string') {
+                localStorage.setItem('hrt-data-hash', snap.dataHash);
+            } else {
+                localStorage.removeItem('hrt-data-hash');
             }
         } catch (rollbackError) {
             console.error('Rollback from pre-import snapshot failed:', rollbackError);
@@ -171,7 +189,7 @@ const SettingsPage: React.FC = () => {
                         : precheck.stats.gelsTotal;
                     const reasons = section === 'events' ? reasonList(precheck.stats.eventsRejected)
                         : section === 'labResults' ? reasonList(precheck.stats.labsRejected)
-                        : 'invalid gel product';
+                        : reasonList(precheck.stats.gelsRejected);
                     return t('import.fatal_detail')
                         .replace('{section}', section)
                         .replace('{total}', String(total))
@@ -207,6 +225,9 @@ const SettingsPage: React.FC = () => {
                 labResults,
                 gelProducts,
                 weight: localStorage.getItem('hrt-weight'),
+                lastModified: localStorage.getItem('hrt-last-modified'),
+                lastDataUpdated: localStorage.getItem('hrt-last-data-updated'),
+                dataHash: localStorage.getItem('hrt-data-hash'),
                 savedAt: new Date().toISOString(),
             }));
 
@@ -219,6 +240,10 @@ const SettingsPage: React.FC = () => {
                     localStorage.setItem('hrt-events', JSON.stringify(newEvents));
                     if (newEvents.length > 0) {
                         localStorage.setItem('hrt-weight', latestEventWeight(newEvents).toString());
+                    } else {
+                        // An explicit `events: []` has no weight source; a stale
+                        // hrt-weight would otherwise keep flowing into hashes/cloud sync.
+                        localStorage.removeItem('hrt-weight');
                     }
                 }
 

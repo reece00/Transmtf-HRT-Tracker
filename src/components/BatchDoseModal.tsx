@@ -107,8 +107,7 @@ const LEVEL_CONTAINER_STYLES: Record<DoseLevelKey | 'neutral', string> = {
 
 const formatGuideNumber = (val: number) => {
     if (Number.isInteger(val)) return val.toString();
-    const rounded = val < 1 ? val.toFixed(2) : val.toFixed(1);
-    return rounded.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+    return val.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
 };
 
 const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSaveBatch }) => {
@@ -577,22 +576,47 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
         if (isAntiandrogen(safeEster)) return null;
         const cfg = DOSE_GUIDE_CONFIG[route];
         if (!cfg) return null;
-        if (route === Route.patchApply && patchMode === 'dose' && cfg.requiresRate) {
-            return { config: cfg, level: null, value: null, showRateHint: true as const };
-        }
-        const rawVal = route === Route.patchApply ? parseFloat(patchRate) : parseFloat(e2Dose);
-        const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
-        let level: DoseLevelKey | null = null;
-        if (value !== null) {
+
+        const grade = (value: number): DoseLevelKey => {
             const [low, medium, high, veryHigh] = cfg.thresholds;
-            if (value <= low) level = 'low';
-            else if (value <= medium) level = 'medium';
-            else if (value <= high) level = 'high';
-            else if (value <= veryHigh) level = 'very_high';
-            else level = 'above';
+            if (value <= low) return 'low';
+            if (value <= medium) return 'medium';
+            if (value <= high) return 'high';
+            if (value <= veryHigh) return 'very_high';
+            return 'above';
+        };
+
+        // 贴片：释放速率 (µg/天) 本身就是每日量，直接分级（保持原有语义）；
+        // “总剂量”模式是单次贴片质量，无频率信息，按中性“本次 X mg”显示。
+        if (route === Route.patchApply) {
+            if (patchMode === 'dose') {
+                const rawVal = parseFloat(rawDose);
+                const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
+                return { config: cfg, level: null, value, showRateHint: true as const, neutral: true as const, labelKey: 'dose.guide.single_dose' as const };
+            }
+            const rawVal = parseFloat(patchRate);
+            const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
+            return { config: cfg, level: value !== null ? grade(value) : null, value, showRateHint: false as const, neutral: false as const, labelKey: 'dose.guide.current' as const };
         }
-        return { config: cfg, level, value, showRateHint: false as const };
-    }, [route, patchMode, patchRate, e2Dose, safeEster]);
+
+        // 口服 / 舌下 / 凝胶 / 注射：批量表单已知频率（timesPerDay / intervalDays），
+        // 因此对“计划层面”的等效 E2 总量分级，而不是单次剂量。
+        // e2Dose 是单次给药的等效 E2（与阈值的量纲一致）；注射按每周总量比较。
+        const perAdminVal = parseFloat(e2Dose);
+        const perAdmin = Number.isFinite(perAdminVal) && perAdminVal > 0 ? perAdminVal : null;
+        const isWeekly = route === Route.injection;
+        const total = perAdmin !== null
+            ? (isWeekly ? perAdmin * (7 / intervalDays) : perAdmin * timesPerDay)
+            : null;
+        return {
+            config: cfg,
+            level: total !== null ? grade(total) : null,
+            value: total,
+            showRateHint: false as const,
+            neutral: false as const,
+            labelKey: isWeekly ? 'dose.guide.plan_per_week' : 'dose.guide.plan_per_day',
+        };
+    }, [route, patchMode, patchRate, e2Dose, rawDose, timesPerDay, intervalDays, safeEster]);
 
     if (!isOpen) return null;
 
@@ -625,8 +649,10 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
             : 0.11)
         : currentTheta;
 
-    const guideUnitLabel = doseGuide?.config ? t(`dose.guide.unit.${doseGuide.config.unitKey}`) : '';
-    const guideRangeText = doseGuide?.config
+    const guideUnitLabel = doseGuide?.config
+        ? t(doseGuide.neutral ? 'dose.guide.unit.mg' : `dose.guide.unit.${doseGuide.config.unitKey}`)
+        : '';
+    const guideRangeText = doseGuide?.config && !doseGuide.neutral
         ? [
             `${t('dose.guide.level.low')} ≤ ${formatGuideNumber(doseGuide.config.thresholds[0])} ${guideUnitLabel}`,
             `${t('dose.guide.level.medium')} ≤ ${formatGuideNumber(doseGuide.config.thresholds[1])} ${guideUnitLabel}`,
@@ -635,9 +661,7 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
         ].join(' · ')
         : '';
     const guideContainerClass = doseGuide
-        ? (doseGuide.level
-            ? LEVEL_CONTAINER_STYLES[doseGuide.level]
-            : (doseGuide.showRateHint ? LEVEL_CONTAINER_STYLES.high : LEVEL_CONTAINER_STYLES.neutral))
+        ? (doseGuide.level ? LEVEL_CONTAINER_STYLES[doseGuide.level] : LEVEL_CONTAINER_STYLES.neutral)
         : LEVEL_CONTAINER_STYLES.neutral;
     const guideBadgeClass = doseGuide?.level ? LEVEL_BADGE_STYLES[doseGuide.level] : '';
 
@@ -937,7 +961,7 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
                                         <Info className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--text-tertiary)' }} />
                                         <div className="space-y-1">
                                             <div className="flex items-center gap-2">
-                                                <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t('dose.guide.title')}</span>
+                                                <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t(doseGuide.neutral ? 'dose.guide.single_dose' : 'dose.guide.title')}</span>
                                                 {doseGuide.level && (
                                                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${guideBadgeClass}`}>
                                                         {t(`dose.guide.level.${doseGuide.level}`)}
@@ -945,7 +969,9 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
                                                 )}
                                             </div>
                                             <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                                                {t('dose.guide.current')}: {doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank')}
+                                                {doseGuide.neutral
+                                                    ? (doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank'))
+                                                    : `${t(doseGuide.labelKey)}: ${doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank')}`}
                                             </p>
                                             {guideRangeText && (
                                                 <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>

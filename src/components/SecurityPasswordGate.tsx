@@ -1,16 +1,25 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Lock, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useTranslation } from '../contexts/LanguageContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useSecurityPassword } from '../contexts/SecurityPasswordContext';
 import NumericKeypad from './NumericKeypad';
 
+// Transport/timeout/server-side failure markers produced by apiClient
+// (fetch errors, aborts, 5xx fallbacks, refresh failure, non-401 verify
+// fallbacks). A wrong PIN instead arrives as the server's own auth message,
+// so anything matching this pattern is a network-type error, not a bad PIN.
+const NETWORK_ERROR_PATTERN = /failed to fetch|networkerror|network error|load failed|request timeout|timeout|http 5|authentication failed|verification failed|verification aborted/i;
+
 const SecurityPasswordGate: React.FC = () => {
   const { t } = useTranslation();
+  const { logout } = useAuth();
   const { hasSecurityPassword, isVerified, isAutoVerifying, verifySecurityPassword } = useSecurityPassword();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [isExiting, setIsExiting] = useState(false);
   const verifyingRef = useRef(false);
 
   useEffect(() => {
@@ -23,6 +32,7 @@ const SecurityPasswordGate: React.FC = () => {
       setError('');
       setIsVerifying(false);
       setIsSuccess(false);
+      setIsExiting(false);
       verifyingRef.current = false;
     }
   }, [hasSecurityPassword]);
@@ -45,6 +55,9 @@ const SecurityPasswordGate: React.FC = () => {
         const msg = result.error || t('auth.error.invalidPassword') || 'Invalid password';
         if (msg.includes('Too many requests') || msg.includes('rate limit') || msg.includes('too many')) {
           setError(t('security.error.rateLimited') || 'Too many attempts. Please wait 5 minutes and try again.');
+        } else if (NETWORK_ERROR_PATTERN.test(msg)) {
+          // Network / server-side failure (non-401): retry or fall back to logout
+          setError(t('security.gate.network_error') || 'Network error — you can retry or log out');
         } else {
           setError(msg);
         }
@@ -78,6 +91,21 @@ const SecurityPasswordGate: React.FC = () => {
       setPassword(prev => prev.slice(0, -1));
     }
   }, [isVerifying]);
+
+  // Recovery path: leave the gate by logging out while KEEPING local data.
+  // After logout the gate unmounts (hasSecurityPassword clears) and the user
+  // can still reach/export their local records.
+  const handleExit = useCallback(async () => {
+    if (isExiting || isVerifying) return;
+    setIsExiting(true);
+    setError('');
+    try {
+      await logout(false);
+    } catch {
+      setIsExiting(false);
+      setError(t('common.error') || 'An error occurred');
+    }
+  }, [isExiting, isVerifying, logout, t]);
 
   if (hasSecurityPassword === null || hasSecurityPassword === false || isVerified || isAutoVerifying) {
     return null;
@@ -275,6 +303,44 @@ const SecurityPasswordGate: React.FC = () => {
             >
               <p>{t('security.gate.hint1') || '此密码用于加密云端数据'}</p>
               <p>{t('security.gate.hint2') || '每次会话只需输入一次'}</p>
+            </div>
+
+            {/* Recovery path — visually secondary exit (F23): plain text
+                link, not a competing CTA. Lives inside the gate container,
+                so the existing focus behaviour is unaffected. */}
+            <div className="mt-4 pt-3 text-center" style={{ borderTop: '1px solid rgba(236,72,153,0.14)' }}>
+              <button
+                type="button"
+                onClick={handleExit}
+                disabled={isExiting || isVerifying}
+                style={{
+                  fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: 'rgba(120,80,160,0.78)',
+                  background: 'none',
+                  border: 'none',
+                  padding: '6px 10px',
+                  cursor: isExiting ? 'default' : 'pointer',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: '3px',
+                  opacity: isExiting ? 0.7 : 1,
+                }}
+              >
+                {isExiting
+                  ? (t('common.loading') || '加载中...')
+                  : (t('security.gate.exit_logout') || '退出登录（保留本地数据）')}
+              </button>
+              <p
+                className="mt-1.5 mx-auto max-w-xs leading-relaxed"
+                style={{
+                  fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+                  fontSize: 10,
+                  color: 'rgba(150,100,185,0.55)',
+                }}
+              >
+                {t('security.gate.recovery_hint') || '忘记密码？退出登录不会删除本地记录。清除浏览器数据将删除本地记录，请先导出备份。'}
+              </p>
             </div>
           </>
         )}

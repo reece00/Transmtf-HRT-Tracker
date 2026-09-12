@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FlaskConical, Plus, Brain, AlertTriangle, ChevronDown, ChevronUp, CheckCircle2, Cpu, Waves, Clock, History, Sparkles } from 'lucide-react';
+import { FlaskConical, Plus, Brain, AlertTriangle, ChevronDown, ChevronUp, CheckCircle2, Cpu, Waves, Clock, History, Sparkles, Info } from 'lucide-react';
 import { useTranslation } from '../contexts/LanguageContext';
 import { formatDate, formatTime } from '../utils/helpers';
 import { LabResult, PersonalModelState, EKFDiagnostics, CalibrationModel, CalibrationMode } from '../../logic';
@@ -57,9 +57,14 @@ const StatRow: React.FC<{ label: string; value: React.ReactNode; hint?: string }
 const LearningPanel: React.FC<{
   personalModel: PersonalModelState | null;
   lastDiagnostics: EKFDiagnostics | null;
-}> = ({ personalModel, lastDiagnostics }) => {
+  calibrationModel: CalibrationModel;
+}> = ({ personalModel, lastDiagnostics, calibrationModel }) => {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+
+  // lastDiagnostics is always produced by the independent EKF update, even
+  // when OU / Hybrid-MIPD is the selected calibration model — surface that.
+  const isEkfsReference = calibrationModel !== 'ekf';
 
   const hasModel = personalModel !== null && personalModel.observationCount > 0;
   const conv = lastDiagnostics?.convergenceScore ?? 0;
@@ -75,6 +80,16 @@ const LearningPanel: React.FC<{
   return (
     <div className="mx-4 glass-card overflow-hidden"
       style={{ borderColor: 'var(--accent-200)' }}>
+      {/* Non-alarming notice: the EKF diagnostics below are an independent
+          reference when a non-EKF calibration model is selected */}
+      {isEkfsReference && (
+        <div className="px-4 pt-3">
+          <div className="flex items-start gap-2 rounded-xl px-3 py-2" style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
+            <Info size={13} className="text-blue-500 mt-px shrink-0" />
+            <p className="text-[10px] font-medium leading-relaxed text-blue-600 dark:text-blue-400">{t('lab.learning.ekf_reference')}</p>
+          </div>
+        </div>
+      )}
       {/* Header – always visible */}
       <button
         className="w-full flex items-center justify-between px-4 py-3 transition-colors"
@@ -144,7 +159,10 @@ const LearningPanel: React.FC<{
               {/* Convergence */}
               <div className="py-1.5 border-b" style={{ borderColor: 'var(--border-secondary)' }}>
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{t('lab.learning_convergence')}</span>
+                  <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                    {t('lab.learning_convergence')}
+                    {isEkfsReference && ' (EKF)'}
+                  </span>
                   <span className="text-[10px] font-bold" style={{ color: 'var(--text-secondary)' }}>{convLabel}</span>
                 </div>
                 <ConvergenceBar score={conv} />
@@ -304,6 +322,7 @@ const LabView: React.FC<LabViewProps> = ({
       <LearningPanel
         personalModel={personalModel}
         lastDiagnostics={lastDiagnostics}
+        calibrationModel={calibrationModel}
       />
 
       {/* E2 Calibration Model Selector */}
