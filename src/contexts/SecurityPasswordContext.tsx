@@ -28,11 +28,21 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
   const checkingRef = useRef<{ generation: number } | null>(null);
   const wasAuthenticatedRef = useRef(false); // Track previous auth state
   const isAuthenticatedRef = useRef(isAuthenticated); // Live auth state for race guards
+  // Live view of passwordVerificationFailed: the gate below must read the
+  // CURRENT value, not a closure from when the callback was created, so an
+  // account switch does not evaluate B's check against A's failure flag (F18
+  // inline review).
+  const passwordVerificationFailedRef = useRef(passwordVerificationFailed);
 
   // Keep isAuthenticatedRef in sync with isAuthenticated
   useEffect(() => {
     isAuthenticatedRef.current = isAuthenticated;
   }, [isAuthenticated]);
+
+  // Keep passwordVerificationFailedRef in sync with the state
+  useEffect(() => {
+    passwordVerificationFailedRef.current = passwordVerificationFailed;
+  }, [passwordVerificationFailed]);
 
   // Check if user has security password
   const checkSecurityPassword = useCallback(async () => {
@@ -70,7 +80,7 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
         setHasSecurityPassword(response.data.has_security_password);
 
         // Try to auto-load password from cookie ONLY ONCE
-        if (response.data.has_security_password && user?.username && !passwordVerificationFailed) {
+        if (response.data.has_security_password && user?.username && !passwordVerificationFailedRef.current) {
           setIsAutoVerifying(true); // Start auto-verification
 
           const savedPassword = await getSecurityPassword(user.username);
@@ -105,9 +115,10 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
                 // Cookie password is invalid, clear it and mark as failed
                 console.warn('Auto-verification failed - cookie password is invalid');
 
-                // CRITICAL FIX: Await cookie cleanup to ensure it completes
+                // CRITICAL FIX: Await cookie cleanup to ensure it completes.
+                // Target only this user's namespaced cookie (F18).
                 try {
-                  await clearSecurityPassword();
+                  await clearSecurityPassword(user.username);
                 } catch (error) {
                   console.error('Failed to clear security password cookie:', error);
                 }
@@ -139,8 +150,14 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
       if (checkingRef.current?.generation === generation) {
         checkingRef.current = null;
       }
+      // Exception safety: an unexpected rejection inside the auto-verify chain
+      // must not leave the auto-verify flag stuck true for this session (F18
+      // inline review). A newer session owns its own flag.
+      if (getSessionGeneration() === generation) {
+        setIsAutoVerifying(false);
+      }
     }
-  }, [isAuthenticated, user, passwordVerificationFailed, getSessionGeneration]);
+  }, [isAuthenticated, user, getSessionGeneration]);
 
   // Verify security password
   const verifySecurityPassword = useCallback(async (password: string): Promise<{ success: boolean; error?: string }> => {
@@ -201,14 +218,32 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
     setIsVerified(false);
     setSecurityPassword(null);
     setPasswordVerificationFailed(false);
+    passwordVerificationFailedRef.current = false;
 
-    // Await cookie cleanup to ensure it completes
+    // Await cookie cleanup to ensure it completes — only this user's cookie.
     try {
-      await clearSecurityPassword();
+      await clearSecurityPassword(user?.username);
     } catch (error) {
       console.error('Failed to clear security password cookie in clearVerification:', error);
     }
-  }, []);
+  }, [user?.username]);
+
+  // F18 re-review: verification state is per-account. A direct account switch
+  // (A → B) keeps isAuthenticated true, so the logout effect below never fires
+  // and B would inherit A's verified flag / in-memory PIN. Reset the whole
+  // security-session state whenever the account identity changes. Declared
+  // BEFORE the auth-change effect so a fresh account always starts from a
+  // clean slate (including the live failure-flag ref and the in-flight check
+  // marker — otherwise B's first check could be suppressed by A's marker or
+  // evaluated against A's passwordVerificationFailed).
+  useEffect(() => {
+    setIsVerified(false);
+    setSecurityPassword(null);
+    setPasswordVerificationFailed(false);
+    passwordVerificationFailedRef.current = false;
+    setIsAutoVerifying(false);
+    checkingRef.current = null;
+  }, [user?.username]);
 
   // Check security password status on auth change
   useEffect(() => {

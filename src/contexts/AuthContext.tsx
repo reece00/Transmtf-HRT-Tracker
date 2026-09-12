@@ -72,6 +72,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const tokenToRevoke = accessToken || getStoredValue(TOKEN_STORAGE_KEY);
+    // Capture the account being logged out BEFORE its username cookie is
+    // cleared, so the security-password cleanup can target that user's
+    // namespaced cookie only (F18: never clear another account's PIN cookie).
+    const usernameToClear = getStoredValue(USERNAME_STORAGE_KEY);
 
     // Invalidate any in-flight refresh for the session being torn down.
     sessionGenerationRef.current += 1;
@@ -113,9 +117,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      // Always clear security password cookie
+      // Always clear security password cookie (this user's namespaced one, plus
+      // the legacy shared blob only if it belongs to this user).
       try {
-        await clearSecurityPassword();
+        await clearSecurityPassword(usernameToClear ?? undefined);
       } catch (error) {
         console.error('Failed to clear security password during logout:', error);
       }
@@ -143,6 +148,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('hrt-dose-templates');
         localStorage.removeItem('hrt-dose-by-drug');
         localStorage.removeItem('hrt-dose-last-drug');
+        // Plaintext pre-import snapshot holds a full copy of the records (F16).
+        localStorage.removeItem('hrt-pre-import-snapshot');
 
         // Storage alone is not enough: in-memory React state (events, labs,
         // gel registry, derived model) would write the old records back on the
