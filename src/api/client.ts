@@ -40,14 +40,9 @@ class ApiClient {
   private baseUrl: string;
   private accessToken: string | null = null;
   private refreshTokenCallback: (() => Promise<boolean>) | null = null;
-  private isRefreshing: boolean = false;
+  private refreshPromise: Promise<boolean> | null = null;
   private refreshTimeoutMs: number = 10000; // 10 second timeout for token refresh
   private activeControllers: Set<AbortController> = new Set();
-  private requestQueue: Array<{
-    execute: () => Promise<any>;
-    resolve: (value: any) => void;
-    reject: (error: any) => void;
-  }> = [];
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
@@ -141,68 +136,34 @@ class ApiClient {
   }
 
   /**
-   * Unified token refresh and queue processing handler
-   * Handles refresh logic and queued requests in a consistent way
-   * Used by both request() and uploadAvatar()
+   * Single shared token-refresh attempt (F19).
+   *
+   * Every request that gets a 401 awaits this same promise and then retries
+   * exactly once (its own hasRetried guard). There is no request queue, so
+   * there is no window in which a queued request can be left without a
+   * consumer: the promise is shared by reference, and it is only cleared in
+   * `finally` — after every await-er already holds the same reference.
+   *
+   * The promise resolves `true` when the refresh succeeded (callers retry) and
+   * `false` on refresh failure/timeout (callers fail with an auth error). Any
+   * 401 arriving after the promise settled starts a fresh refresh attempt,
+   * which is the correct behaviour for a genuinely new auth failure.
    */
-  private async handleTokenRefreshAndQueue(): Promise<boolean> {
-    try {
-      const refreshed = await this.executeRefreshWithTimeout();
-
-      if (refreshed) {
-        // Process queued requests
-        const queue = [...this.requestQueue];
-        this.requestQueue = [];
-
-        // Process all queued requests asynchronously
-        // Note: Always resolve (never reject) to maintain consistency with direct API calls
-        queue.forEach((queuedRequest) => {
-          queuedRequest.execute()
-            .then(queuedRequest.resolve)
-            .catch((error) => {
-              // Convert exception to ApiResponse format for consistency
-              queuedRequest.resolve({
-                success: false,
-                error: error instanceof Error ? error.message : 'Request failed',
-              });
-            });
+  private getSharedRefreshPromise(): Promise<boolean> {
+    if (!this.refreshPromise) {
+      const promise = this.executeRefreshWithTimeout()
+        .catch((error) => {
+          console.error('Token refresh failed:', error);
+          return false;
+        })
+        .finally(() => {
+          if (this.refreshPromise === promise) {
+            this.refreshPromise = null;
+          }
         });
-
-        return true;
-      } else {
-        // Refresh failed, resolve all queued requests with error
-        const queue = [...this.requestQueue];
-        this.requestQueue = [];
-
-        const authError: ApiResponse<any> = {
-          success: false,
-          error: 'Authentication failed',
-          status: 401,
-        };
-
-        queue.forEach((queuedRequest) => {
-          queuedRequest.resolve(authError);
-        });
-
-        return false;
-      }
-    } catch (error) {
-      // Handle refresh callback exception
-      const queue = [...this.requestQueue];
-      this.requestQueue = [];
-
-      const refreshError: ApiResponse<any> = {
-        success: false,
-        error: error instanceof Error ? error.message : 'Token refresh failed',
-        status: 500,
-      };
-
-      queue.forEach((queuedRequest) => {
-        queuedRequest.resolve(refreshError);
-      });
-
-      throw error;
+      this.refreshPromise = promise;
     }
+    return this.refreshPromise;
   }
 
   private async request<T>(
@@ -262,50 +223,25 @@ class ApiClient {
       }
 
       if (!response.ok) {
-        // Handle 401 Unauthorized - try to refresh token once
+        // Handle 401 Unauthorized - share one refresh, then retry exactly once
         if (response.status === 401 &&
             this.refreshTokenCallback &&
             needsAuth &&
             !hasRetried) {
 
-          // If already refreshing, queue this request
-          if (this.isRefreshing) {
-            return new Promise((resolve, reject) => {
-              this.requestQueue.push({
-                execute: () => this.request<T>(endpoint, options, timeout, true, externalSignal),
-                resolve,
-                reject,
-              });
-            });
+          const refreshed = await this.getSharedRefreshPromise();
+
+          if (refreshed) {
+            // Retry the original request with the new token
+            return await this.request<T>(endpoint, options, timeout, true, externalSignal);
           }
 
-          // Start refresh process
-          this.isRefreshing = true;
-
-          try {
-            const refreshed = await this.handleTokenRefreshAndQueue();
-
-            if (refreshed) {
-              // Retry the original request with new token
-              return await this.request<T>(endpoint, options, timeout, true);
-            } else {
-              // Refresh failed
-              return {
-                success: false,
-                error: 'Authentication failed',
-                status: 401,
-              } as ApiResponse<T>;
-            }
-          } catch (error) {
-            // Handle refresh exception
-            return {
-              success: false,
-              error: error instanceof Error ? error.message : 'Token refresh failed',
-              status: 500,
-            } as ApiResponse<T>;
-          } finally {
-            this.isRefreshing = false;
-          }
+          // Refresh failed
+          return {
+            success: false,
+            error: 'Authentication failed',
+            status: 401,
+          } as ApiResponse<T>;
         }
 
         return {
@@ -496,46 +432,21 @@ class ApiClient {
       }
 
       if (!response.ok) {
-        // Handle 401 Unauthorized - try to refresh token once
+        // Handle 401 Unauthorized - share one refresh, then retry exactly once
         if (response.status === 401 && this.refreshTokenCallback && !hasRetried) {
-          // If already refreshing, queue this request
-          if (this.isRefreshing) {
-            return new Promise((resolve, reject) => {
-              this.requestQueue.push({
-                execute: () => this.uploadAvatar(file, timeout, true, externalSignal),
-                resolve,
-                reject,
-              });
-            });
+          const refreshed = await this.getSharedRefreshPromise();
+
+          if (refreshed) {
+            // Retry the upload with the new token
+            return await this.uploadAvatar(file, timeout, true, externalSignal);
           }
 
-          // Start refresh process
-          this.isRefreshing = true;
-
-          try {
-            const refreshed = await this.handleTokenRefreshAndQueue();
-
-            if (refreshed) {
-              // Retry the upload with new token
-              return await this.uploadAvatar(file, timeout, true);
-            } else {
-              // Refresh failed
-              return {
-                success: false,
-                error: 'Authentication failed',
-                status: 401,
-              };
-            }
-          } catch (error) {
-            // Handle refresh exception
-            return {
-              success: false,
-              error: error instanceof Error ? error.message : 'Token refresh failed',
-              status: 500,
-            };
-          } finally {
-            this.isRefreshing = false;
-          }
+          // Refresh failed
+          return {
+            success: false,
+            error: 'Authentication failed',
+            status: 401,
+          };
         }
 
         return {
