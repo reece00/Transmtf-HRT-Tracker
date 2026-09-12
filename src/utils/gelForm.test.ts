@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ExtraKey } from '../../types';
 import type { GelProductSpec } from '../../pk';
 import { GEL_COVERAGE_TEMPLATES } from '../../pk';
@@ -132,5 +132,27 @@ describe('resolveGelAreaToStore (anti-drift area persistence)', () => {
     it('omits area for scrotal regardless of coverage (area-invariant)', () => {
         expect(resolveGelAreaToStore(idxOf('manual'), true, 333)).toBeUndefined();
         expect(resolveGelAreaToStore(idxOf('product'), true, 333)).toBeUndefined();
+    });
+});
+
+describe('nextGelProductId — ids are never reused after deletion (F06)', () => {
+    it('allocates monotonically even after the highest product is deleted', async () => {
+        const store = new Map<string, string>();
+        vi.stubGlobal('localStorage', {
+            getItem: (k: string) => store.get(k) ?? null,
+            setItem: (k: string, v: string) => { store.set(k, v); },
+            removeItem: (k: string) => { store.delete(k); },
+        });
+        const { nextGelProductId } = await import('./doseForm');
+        const make = (id: number): GelProductSpec => product({ id });
+
+        const first = nextGelProductId([]);
+        const second = nextGelProductId([make(first)]);
+        // Simulate deleting ALL products, then creating a new one: the id must
+        // NOT be reused (historical records reference ids permanently).
+        const third = nextGelProductId([]);
+        expect(second).toBeGreaterThan(first);
+        expect(third).toBeGreaterThan(second);
+        vi.unstubAllGlobals();
     });
 });

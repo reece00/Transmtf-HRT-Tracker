@@ -207,9 +207,43 @@ export const writeCustomGelProducts = (products: GelProductSpec[]) => {
 export const getAllGelProducts = (custom: GelProductSpec[] = readCustomGelProducts()): GelProductSpec[] =>
     [...GEL_PRODUCTS, ...custom];
 
-/** Next free custom id (monotonic above any existing custom product). */
-export const nextGelProductId = (custom: GelProductSpec[]): number =>
-    custom.reduce((max, p) => Math.max(max, p.id), GEL_CUSTOM_ID_BASE - 1) + 1;
+/**
+ * Persisted high-water mark for custom gel-product id allocation (F06).
+ * Ids are NEVER reused after deletion: a reused id would silently re-point
+ * historical gel records (which store only the product id) at whatever new
+ * product happens to inherit it. The first allocation on a device also jumps
+ * to a random offset so two devices that later merge via cloud sync are
+ * extremely unlikely to allocate colliding ids (multi-device safety).
+ */
+const GEL_ID_SEQ_KEY = 'hrt-gel-id-seq';
+
+const randomIdStart = (): number =>
+    GEL_CUSTOM_ID_BASE + Math.floor(Math.random() * 900_000);
+
+/** Next custom id: monotonic, never reused, collision-safe across devices. */
+export const nextGelProductId = (custom: GelProductSpec[]): number => {
+    let seq: number;
+    try {
+        const raw = localStorage.getItem(GEL_ID_SEQ_KEY);
+        const parsed = raw ? parseInt(raw, 10) : NaN;
+        seq = Number.isFinite(parsed) && parsed >= GEL_CUSTOM_ID_BASE ? parsed : randomIdStart();
+    } catch {
+        seq = randomIdStart();
+    }
+    // Also stay above every live product: the seq may predate an import or a
+    // cloud sync that brought in higher ids than this device ever allocated.
+    // `seq` is the LAST allocated id, so the next id is at least seq + 1.
+    const next = Math.max(
+        seq + 1,
+        custom.reduce((max, p) => Math.max(max, p.id), GEL_CUSTOM_ID_BASE - 1) + 1,
+    );
+    try {
+        localStorage.setItem(GEL_ID_SEQ_KEY, String(next));
+    } catch {
+        /* ignore */
+    }
+    return next;
+};
 
 export interface LastGelPrefill {
     productId: number;
