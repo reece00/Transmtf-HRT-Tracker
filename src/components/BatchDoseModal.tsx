@@ -509,9 +509,12 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
     const handleConfirm = async () => {
         if (previewEvents.length === 0) return;
         // F15: final gate — no invalid object may enter app state even if a
-        // preview row was edited into a bad state (NaN time, non-positive dose).
+        // preview row was edited into a bad state (NaN time, non-finite dose).
+        // patchRemove rows legitimately carry doseMG 0; every other route
+        // must have a positive dose.
         const allValid = previewEvents.every(ev =>
-            Number.isFinite(ev.timeH) && Number.isFinite(ev.doseMG) && ev.doseMG > 0);
+            Number.isFinite(ev.timeH) && Number.isFinite(ev.doseMG)
+            && (ev.route === Route.patchRemove ? ev.doseMG >= 0 : ev.doseMG > 0));
         if (!allValid) {
             showDialog('alert', t('batch.invalid_time'));
             return;
