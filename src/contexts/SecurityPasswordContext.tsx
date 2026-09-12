@@ -17,7 +17,7 @@ interface SecurityPasswordContextType {
 const SecurityPasswordContext = createContext<SecurityPasswordContextType | undefined>(undefined);
 
 export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, user, isLoading } = useAuth();
+  const { isAuthenticated, user, isLoading, getSessionGeneration } = useAuth();
   const [hasSecurityPassword, setHasSecurityPassword] = useState<boolean | null>(null);
   const [isVerified, setIsVerified] = useState(false);
   const [securityPassword, setSecurityPassword] = useState<string | null>(null);
@@ -49,12 +49,16 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
 
     checkingRef.current = true;
 
+    // Capture the session this check belongs to (F18: guards must detect an
+    // account switch, not just a true/false auth flip).
+    const generation = getSessionGeneration();
+
     try {
       const response = await apiClient.getSecurityPasswordStatus();
 
-      // CRITICAL FIX: Check LIVE auth state after async call (race condition guard)
-      if (!isAuthenticatedRef.current) {
-        console.log('User logged out during checkSecurityPassword, aborting');
+      // CRITICAL FIX: Check LIVE auth state + session generation after async call
+      if (!isAuthenticatedRef.current || getSessionGeneration() !== generation) {
+        console.log('User logged out or switched account during checkSecurityPassword, aborting');
         return;
       }
 
@@ -67,9 +71,9 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
 
           const savedPassword = await getSecurityPassword(user.username);
 
-          // Check LIVE auth state again after second async call
-          if (!isAuthenticatedRef.current) {
-            console.log('User logged out during password retrieval, aborting');
+          // Check LIVE auth state + session again after second async call
+          if (!isAuthenticatedRef.current || getSessionGeneration() !== generation) {
+            console.log('User logged out or switched account during password retrieval, aborting');
             setIsAutoVerifying(false);
             return;
           }
@@ -80,9 +84,9 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
             // Auto-verify with saved password
             const verifyResponse = await apiClient.getUserData({ password: savedPassword });
 
-            // Final LIVE auth check after verification
-            if (!isAuthenticatedRef.current) {
-              console.log('User logged out during auto-verification, aborting');
+            // Final LIVE auth + session check after verification
+            if (!isAuthenticatedRef.current || getSessionGeneration() !== generation) {
+              console.log('User logged out or switched account during auto-verification, aborting');
               setIsAutoVerifying(false);
               return;
             }
@@ -119,7 +123,7 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
     } finally {
       checkingRef.current = false;
     }
-  }, [isAuthenticated, user, passwordVerificationFailed]);
+  }, [isAuthenticated, user, passwordVerificationFailed, getSessionGeneration]);
 
   // Verify security password
   const verifySecurityPassword = useCallback(async (password: string): Promise<{ success: boolean; error?: string }> => {
@@ -128,8 +132,16 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
     }
 
     try {
+      // Capture the session this verification belongs to; a stale success must
+      // never mark a new account's session as verified (F18).
+      const generation = getSessionGeneration();
+
       // Verify by attempting to get user data with this password
       const response = await apiClient.getUserData({ password });
+
+      if (getSessionGeneration() !== generation || !isAuthenticatedRef.current) {
+        return { success: false, error: 'Verification aborted: session changed' };
+      }
 
       if (response.success) {
         // Save password to cookie for auto-login next time FIRST
@@ -159,7 +171,7 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
       console.error('Verification error:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Verification failed' };
     }
-  }, [user]);
+  }, [user, getSessionGeneration]);
 
   // Clear verification state
   const clearVerification = useCallback(async () => {

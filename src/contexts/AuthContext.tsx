@@ -22,6 +22,8 @@ interface AuthContextType {
   loginWithTokens: (tokens: AuthTokens, username: string, displayName?: string, avatarUrl?: string) => void;
   logout: (clearLocalData?: boolean) => Promise<void>;
   refreshAccessToken: () => Promise<boolean>;
+  /** Live session generation; increments on every login/logout/account switch. Async tasks capture it to detect stale sessions. */
+  getSessionGeneration: () => number;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -57,6 +59,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const refreshPromiseRef = React.useRef<Promise<boolean> | null>(null);
+  // Increments on every session boundary (login/register/loginWithTokens/logout).
+  // In-flight async auth tasks capture the current value and must re-verify it
+  // before writing tokens, cookies or React state, so a stale response from a
+  // previous account/session can never overwrite the new one (F18).
+  const sessionGenerationRef = React.useRef(0);
+  const getSessionGeneration = useCallback(() => sessionGenerationRef.current, []);
 
   const logout = useCallback(async (clearLocalData: boolean = false) => {
     if (isLoggingOut) {
@@ -64,6 +72,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const tokenToRevoke = accessToken || getStoredValue(TOKEN_STORAGE_KEY);
+
+    // Invalidate any in-flight refresh for the session being torn down.
+    sessionGenerationRef.current += 1;
+    refreshPromiseRef.current = null;
 
     setIsLoggingOut(true);
     setLogoutInProgress(true);
@@ -121,12 +133,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return refreshPromiseRef.current;
     }
 
-    refreshPromiseRef.current = (async () => {
+    // Capture which session this refresh belongs to; results are only applied
+    // if the session (and account) is unchanged when the response arrives.
+    const generation = sessionGenerationRef.current;
+    const sessionUsername = getStoredValue(USERNAME_STORAGE_KEY);
+
+    const promise = (async () => {
       try {
         const refreshToken = getStoredValue(REFRESH_TOKEN_STORAGE_KEY);
         if (!refreshToken) return false;
 
         const response = await apiClient.refreshToken({ refresh_token: refreshToken });
+
+        // Stale session (logged out or switched account): never apply old results.
+        if (sessionGenerationRef.current !== generation || getStoredValue(USERNAME_STORAGE_KEY) !== sessionUsername) {
+          return false;
+        }
 
         if (response.success && response.data) {
           const { access_token, refresh_token } = response.data;
@@ -138,18 +160,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         if (response.status === 401) {
-          // Refresh token is invalid/expired - logout
-          logout();
+          // Refresh token is invalid/expired - logout (only if still our session)
+          if (sessionGenerationRef.current === generation) {
+            logout();
+          }
         } else {
           console.warn('Refresh token failed, keeping session for retry:', response.error);
         }
         return false;
       } finally {
-        refreshPromiseRef.current = null;
+        if (refreshPromiseRef.current === promise) {
+          refreshPromiseRef.current = null;
+        }
       }
     })();
 
-    return refreshPromiseRef.current;
+    refreshPromiseRef.current = promise;
+    return promise;
   }, [logout]);
 
   // Initialize auth state from cookies, with silent refresh fallback
@@ -169,7 +196,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else if (storedRefreshToken && storedUsername) {
       // No access token (expired / cleared) but refresh token exists — try silent refresh
       // Keep isLoading=true until refresh completes so ProtectedRoute doesn't flash /login
+      const generation = sessionGenerationRef.current;
       apiClient.refreshToken({ refresh_token: storedRefreshToken }).then((response) => {
+        // A login/logout started while the refresh was in flight — discard the stale result.
+        if (sessionGenerationRef.current !== generation) {
+          setIsLoading(false);
+          return;
+        }
         if (response.success && response.data) {
           const { access_token, refresh_token } = response.data;
           const storedDisplayName = getStoredValue(DISPLAY_NAME_STORAGE_KEY) || undefined;
@@ -242,6 +275,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (response.success && response.data) {
       const { access_token, refresh_token } = response.data;
 
+      // New session: invalidate any in-flight auth tasks from a previous session.
+      sessionGenerationRef.current += 1;
+      refreshPromiseRef.current = null;
+
       setAccessToken(access_token);
       setUser({ username });
       apiClient.setAccessToken(access_token);
@@ -266,6 +303,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (response.success && response.data) {
       const { access_token, refresh_token } = response.data;
 
+      // New session: invalidate any in-flight auth tasks from a previous session.
+      sessionGenerationRef.current += 1;
+      refreshPromiseRef.current = null;
+
       setAccessToken(access_token);
       setUser({ username });
       apiClient.setAccessToken(access_token);
@@ -282,6 +323,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithTokens = (tokens: AuthTokens, username: string, displayName?: string, avatarUrl?: string) => {
     const { access_token, refresh_token } = tokens;
+
+    // New session: invalidate any in-flight auth tasks from a previous session.
+    sessionGenerationRef.current += 1;
+    refreshPromiseRef.current = null;
 
     setAccessToken(access_token);
     setUser({ username, displayName, avatarUrl });
@@ -310,6 +355,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithTokens,
         logout,
         refreshAccessToken,
+        getSessionGeneration,
       }}
     >
       {children}
