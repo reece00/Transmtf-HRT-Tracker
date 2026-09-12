@@ -15,6 +15,8 @@ export interface ConflictState {
   diffs: FieldDiff[];
   localTime: string;
   cloudTime: string;
+  /** Auth session generation that raised the conflict — resolutions from a different session must be ignored (F02). */
+  sessionGeneration?: number;
 }
 
 interface SyncConflictModalProps {

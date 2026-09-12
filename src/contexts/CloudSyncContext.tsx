@@ -94,6 +94,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [pendingConflict, setPendingConflict] = useState<ConflictState | null>(null);
+  // Mirror of pendingConflict for instance-scoped cleanup: a stale resolver's
+  // finally must never erase a NEW session's conflict modal (F02 re-review).
+  const pendingConflictStateRef = useRef<ConflictState | null>(null);
+  const updatePendingConflict = useCallback((next: ConflictState | null) => {
+    pendingConflictStateRef.current = next;
+    setPendingConflict(next);
+  }, []);
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isSyncingRef = useRef(false);
@@ -278,9 +285,9 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // A pending conflict belongs to the session that raised it. On logout or
   // account switch it must not linger over the new session (F02).
   useEffect(() => {
-    setPendingConflict(null);
+    updatePendingConflict(null);
     conflictPendingRef.current = false;
-  }, [isAuthenticated, user?.username]);
+  }, [isAuthenticated, user?.username, updatePendingConflict]);
 
   // ── apply cloud data to local ──
   const applyCloudToLocal = useCallback((data: any, localData: Record<string, any>, fallbackTimestamp?: string) => {
@@ -370,6 +377,14 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const localData = getLocalDataSnapshot();
       const now = new Date();
 
+      // F02 re-review: after ANY awaited push, stop dead if the session changed
+      // — otherwise the stamp/baseline lines after the push would still run
+      // for a sync whose session is over.
+      const pushAndStayCurrent = async (data: Parameters<typeof pushLocalDataToCloud>[0]): Promise<boolean> => {
+        await pushLocalDataToCloud(data);
+        return getSessionGeneration() === generation && (userRef.current?.username ?? null) === username;
+      };
+
       if (!response.success || !response.data) {
         // GET failed — DO NOT push: we have no idea what cloud actually contains,
         // and pushing blindly would set a stale baseline. The next 3-second poll
@@ -384,7 +399,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ② No cloud data exists → push local
       if (!cloudData) {
         if (localData.lastModified) {
-          await pushLocalDataToCloud({ ...localData, lastModified: localData.lastModified });
+          if (!(await pushAndStayCurrent({ ...localData, lastModified: localData.lastModified }))) return;
         }
         setLastSyncTime(now);
         localStorage.setItem(LAST_SYNC_TIME_KEY, now.toISOString());
@@ -416,7 +431,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.setItem(LAST_DATA_UPDATED_KEY, cloudData.lastDataUpdated);
         } else if (localData.lastDataUpdated && !cloudData.lastDataUpdated) {
           // Cloud lacks the field, push once so it's recorded
-          await pushLocalDataToCloud({ ...localData, lastModified: localData.lastModified || now.toISOString() });
+          if (!(await pushAndStayCurrent({ ...localData, lastModified: localData.lastModified || now.toISOString() }))) return;
         }
         // Local == cloud, refresh baseline so future pushes don't trip false conflicts
         setCloudBaseline(cloudData.lastDataUpdated || localData.lastDataUpdated || null, cloudHash);
@@ -454,12 +469,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const diffs = computeFieldDiffs(localData, cloudData);
           if (diffs.length > 0) {
             conflictPendingRef.current = true;
-            setPendingConflict({
+            updatePendingConflict({
               localData,
               cloudData,
               diffs,
               localTime: localDataUpdated || '',
               cloudTime: cloudDataUpdated || '',
+              sessionGeneration: generation,
             });
             return true;
           }
@@ -470,10 +486,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (!cloudChangedSinceBaseline && localChangedSinceBaseline) {
         // Only local changed → safe to push without prompting
-        await pushLocalDataToCloud({
+        if (!(await pushAndStayCurrent({
           ...localData,
           lastModified: localData.lastModified || now.toISOString(),
-        });
+        }))) return;
         setLastSyncTime(now);
         localStorage.setItem(LAST_SYNC_TIME_KEY, now.toISOString());
         localStorage.setItem(LAST_PULL_TIME_KEY, now.toISOString());
@@ -496,12 +512,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const diffs = computeFieldDiffs(localData, cloudData);
         if (diffs.length > 0) {
           conflictPendingRef.current = true;
-          setPendingConflict({
+          updatePendingConflict({
             localData,
             cloudData,
             diffs,
             localTime: localDataUpdated || '',
             cloudTime: cloudDataUpdated || '',
+            sessionGeneration: generation,
           });
         }
         return;
@@ -517,14 +534,14 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (cloudLM && localLM) {
         if (new Date(localLM) > new Date(cloudLM)) {
-          await pushLocalDataToCloud(localData);
+          if (!(await pushAndStayCurrent(localData))) return;
         } else {
           // Cloud newer, or equal lastModified with different hashes — prefer cloud,
           // but guard against silently clearing local lists (escalates to conflict).
           if (tryPull()) return;
         }
       } else if (!cloudLM && localLM) {
-        await pushLocalDataToCloud({ ...localData, lastModified: localLM });
+        if (!(await pushAndStayCurrent({ ...localData, lastModified: localLM }))) return;
       } else if (cloudLM && !localLM) {
         if (tryPull()) return;
       } else {
@@ -543,19 +560,31 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [canSync, hasSecurityPassword, securityPassword, getLocalDataSnapshot, pushLocalDataToCloud, applyCloudToLocal, getSessionGeneration]);
+  }, [canSync, hasSecurityPassword, securityPassword, getLocalDataSnapshot, pushLocalDataToCloud, applyCloudToLocal, getSessionGeneration, updatePendingConflict]);
 
   // ── Resolve conflict ──
   const resolveConflict = useCallback(async (
     resolution: 'local' | 'cloud' | 'merge',
     mergedData?: Record<string, any>,
   ) => {
-    if (!pendingConflict) return;
+    if (!pendingConflictStateRef.current) return;
 
-    // F02: a conflict resolution belongs to the session that raised it.
+    // F02: a conflict resolution belongs to the session that raised it AND to
+    // the exact conflict instance it resolves.
     const generation = getSessionGeneration();
-    const { localData, cloudData } = pendingConflict;
+    const conflict = pendingConflictStateRef.current;
+    const { localData, cloudData } = conflict;
     const now = new Date().toISOString();
+
+    // Entry guard: the session may have changed while the dialog sat open
+    // (e.g. same-account re-login bumps the generation without the auth-change
+    // effect firing). A resolution raised by another session is ignored.
+    if (conflict.sessionGeneration !== undefined && conflict.sessionGeneration !== generation) {
+      return;
+    }
+
+    // True while this resolver still owns the conflict UI and the sync lock.
+    let current = true;
 
     try {
       isSyncingRef.current = true;
@@ -568,28 +597,40 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // the OS theme flips. The cloud and merge branches already re-read.
         const currentLocal = getLocalDataSnapshot();
         await pushLocalDataToCloud({ ...currentLocal, lastModified: now, lastDataUpdated: now });
-        localStorage.setItem('hrt-last-modified', now);
-        localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
+        current = getSessionGeneration() === generation;
+        if (current) {
+          localStorage.setItem('hrt-last-modified', now);
+          localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
+        }
       } else if (resolution === 'cloud') {
+        // Apply locally ONLY if this resolver is still current — the check and
+        // the apply run with no await between them, so a stale resolver can
+        // never write old-session data into local storage (F02 re-review).
+        current = getSessionGeneration() === generation;
+        if (!current) return;
         applyCloudToLocal({ ...cloudData, lastModified: now, lastDataUpdated: now }, localData);
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
         await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
+        current = getSessionGeneration() === generation;
       } else if (resolution === 'merge' && mergedData) {
+        current = getSessionGeneration() === generation;
+        if (!current) return;
         applyCloudToLocal({ ...mergedData, lastModified: now, lastDataUpdated: now }, localData);
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
         await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
+        current = getSessionGeneration() === generation;
       }
 
-      const syncNow = new Date();
-      if (getSessionGeneration() !== generation) {
+      if (!current) {
         // Session changed while resolving — skip all stamps; the finally
         // block still releases the conflict/sync locks.
         return;
       }
+      const syncNow = new Date();
       setLastSyncTime(syncNow);
       localStorage.setItem(LAST_SYNC_TIME_KEY, syncNow.toISOString());
       localStorage.setItem(LAST_PULL_TIME_KEY, syncNow.toISOString());
@@ -597,12 +638,18 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       console.error('Conflict resolution error:', error);
       setSyncError(error instanceof Error ? error.message : 'Failed to resolve conflict');
     } finally {
-      setPendingConflict(null);
-      conflictPendingRef.current = false;
+      // Instance-scoped cleanup: only clear the conflict UI if it is still
+      // THIS resolver's conflict — a stale finally must never erase a new
+      // session's conflict modal (F02 re-review). The sync lock is a singleton
+      // this operation holds, so it is always released.
+      if (pendingConflictStateRef.current === conflict) {
+        updatePendingConflict(null);
+        conflictPendingRef.current = false;
+      }
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [pendingConflict, pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot, getSessionGeneration]);
+  }, [pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot, getSessionGeneration, updatePendingConflict]);
 
   // ── Watch for local data changes → trigger unified sync ──
   useEffect(() => {
