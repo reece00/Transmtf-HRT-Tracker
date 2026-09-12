@@ -38,7 +38,22 @@ interface DoseTemplate {
     slTier: number;
     useCustomTheta: boolean;
     customTheta: string;
+    /**
+     * Gel administration parameters (F09). Optional so templates saved by older
+     * versions still load — applying a template that lacks them must surface a
+     * "template incomplete" prompt instead of silently reusing whatever the
+     * form currently holds.
+     */
+    gelProductId?: number;
+    gelCoverage?: number;
+    gelArea?: string;
+    gelWash?: string;
+    gelCoApplied?: number;
 }
+
+/** True when a template predates the gel-parameter fields (F09). */
+const isGelTemplateIncomplete = (tpl: DoseTemplate): boolean =>
+    tpl.route === Route.gel && tpl.gelProductId === undefined;
 
 type DoseLevelKey = 'low' | 'medium' | 'high' | 'very_high' | 'above';
 
@@ -449,6 +464,21 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         setSlTier(tpl.slTier);
         setUseCustomTheta(tpl.useCustomTheta);
         setCustomTheta(tpl.customTheta);
+        // F09: restore the full gel administration context (product + coverage
+        // + area + wash + co-application). A template saved before these fields
+        // existed must NOT silently reuse whatever the form currently holds —
+        // surface an explicit "template incomplete" notice instead.
+        if (tpl.route === Route.gel) {
+            if (isGelTemplateIncomplete(tpl)) {
+                showDialog('alert', t('template.incomplete_gel'));
+            } else {
+                setGelProductId(tpl.gelProductId!);
+                setGelCoverage(tpl.gelCoverage ?? GEL_COVERAGE_DEFAULT_IDX);
+                setGelArea(tpl.gelArea ?? "");
+                setGelWash(tpl.gelWash ?? "");
+                setGelCoApplied(tpl.gelCoApplied ?? 0);
+            }
+        }
         // Match the quick-panel mode to the template dose (custom if it isn't a tier).
         const tplDose = parseFloat(tpl.ester === Ester.E2 ? tpl.e2Dose : tpl.rawDose);
         setUseCustomDose(hasQuickDosePanel(tpl.route, tpl.ester) && !isPresetDose(tpl.ester, tplDose));
@@ -464,6 +494,10 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
             route, ester, rawDose, e2Dose,
             patchMode, patchRate, gelSite,
             slTier, useCustomTheta, customTheta,
+            // F09: the gel fields decide which product/kinetics an application
+            // resolves to — a template without them would apply the wrong gel
+            // context silently.
+            gelProductId, gelCoverage, gelArea, gelWash, gelCoApplied,
         };
         const updated = [...templates, tpl];
         setTemplates(updated);

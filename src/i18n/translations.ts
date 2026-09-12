@@ -188,6 +188,7 @@ export const TRANSLATIONS_BASE = {
         "template.name_placeholder": "模板名称",
         "template.confirm": "保存",
         "template.empty": "暂无模板",
+        "template.incomplete_gel": "此模板保存较早，缺少凝胶产品与涂抹参数。请确认产品和涂抹方式后再保存记录。",
 
         "batch.title": "批量添加",
         "batch.start_date": "开始日期",
@@ -947,6 +948,7 @@ export const TRANSLATIONS_BASE = {
         "template.name_placeholder": "Template name",
         "template.confirm": "Save",
         "template.empty": "No templates yet",
+        "template.incomplete_gel": "This template was saved before gel product and application settings existed. Please confirm the product and application parameters before saving a record.",
 
         "batch.title": "Batch Add",
         "batch.start_date": "Start Date",
@@ -1678,6 +1680,7 @@ export const TRANSLATIONS = {
         "template.name_placeholder": "模板名稱",
         "template.confirm": "儲存",
         "template.empty": "暫無模板",
+        "template.incomplete_gel": "此模板儲存較早，缺少凝膠產品與塗抹參數。請確認產品和塗抹方式後再儲存紀錄。",
 
         "route.injection": "肌肉注射（Injection）",
         "route.oral": "口服（Oral）",
@@ -2106,6 +2109,7 @@ export const TRANSLATIONS = {
         "template.name_placeholder": "テンプレート名",
         "template.confirm": "保存",
         "template.empty": "テンプレートなし",
+        "template.incomplete_gel": "このテンプレートはジェル製品・塗布設定より前に保存されたものです。記録を保存する前に製品と塗布条件を確認してください。",
 
         "route.injection": "筋注 (Injection)",
         "route.oral": "経口 (Oral)",
