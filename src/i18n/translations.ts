@@ -202,6 +202,8 @@ export const TRANSLATIONS_BASE = {
         "batch.dose": "剂量",
         "batch.mixed": "混合",
         "batch.invalid_range": "开始日期必须早于或等于结束日期",
+        "batch.invalid_time": "请填写有效的用药时间（时:分）",
+        "batch.too_many": "单次最多生成 {n} 条记录，请缩小日期范围",
         "batch.tap_to_edit": "点击某一条可单独修改",
 
         "route.injection": "肌肉注射 (Injection)",
@@ -952,6 +954,8 @@ export const TRANSLATIONS_BASE = {
         "batch.dose": "Dose",
         "batch.mixed": "Mixed",
         "batch.invalid_range": "Start date must be on or before end date",
+        "batch.invalid_time": "Enter a valid time (hour:minute) for every slot",
+        "batch.too_many": "At most {n} records can be generated in one batch — please narrow the date range",
         "batch.tap_to_edit": "Tap any row to edit it individually",
 
         "route.injection": "Injection",

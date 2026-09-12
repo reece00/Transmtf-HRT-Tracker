@@ -38,6 +38,23 @@ interface BatchDoseModalProps {
 
 const DEFAULT_TIMES = ['09:00', '21:00', '14:00', '18:00'];
 
+// A slot must be a real clock time: "HH:mm" (or "H:mm") with the hour within
+// 0-23 and the minute within 0-59. An empty or partial value (what a cleared
+// <input type="time"> yields) is invalid — it would otherwise produce an
+// Invalid Date and a NaN timeH that JSON-serializes to null (F15).
+const TIME_SLOT_PATTERN = /^(\d{1,2}):(\d{2})$/;
+const isValidTimeSlot = (slot: string): boolean => {
+    const m = TIME_SLOT_PATTERN.exec(slot);
+    if (!m) return false;
+    const hh = Number(m[1]);
+    const mm = Number(m[2]);
+    return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+};
+
+// Upper bound for a single batch generation, guarding against an accidentally
+// huge date range freezing the page with a massive main-thread computation.
+const MAX_BATCH_EVENTS = 5000;
+
 const toLocalDateStr = (d: Date) => {
     const pad = (n: number) => n.toString().padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -421,6 +438,13 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
             showDialog('alert', t('batch.invalid_range'));
             return;
         }
+        // F15: never generate events from invalid/empty time slots — they would
+        // carry NaN timeH that JSON-serializes to null and corrupts sorting,
+        // simulation ranges, chart math and later edits.
+        if (timeSlots.length === 0 || timeSlots.some(slot => !isValidTimeSlot(slot))) {
+            showDialog('alert', t('batch.invalid_time'));
+            return;
+        }
 
         const finalDoseMG = resolveDoseMG();
         if (finalDoseMG === null) return;
@@ -446,6 +470,7 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
                 const eventDate = new Date(current);
                 eventDate.setHours(hh, mm, 0, 0);
                 const timeH = eventDate.getTime() / 3600000;
+                if (!Number.isFinite(timeH)) continue;
                 events.push({
                     id: uuidv4(),
                     route,
@@ -455,6 +480,10 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
                     weightKG,
                     extras: { ...extrasTemplate },
                 });
+            }
+            if (events.length > MAX_BATCH_EVENTS) {
+                showDialog('alert', t('batch.too_many').replace('{n}', String(MAX_BATCH_EVENTS)));
+                return;
             }
             current.setDate(current.getDate() + intervalDays);
         }
@@ -479,6 +508,14 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
 
     const handleConfirm = async () => {
         if (previewEvents.length === 0) return;
+        // F15: final gate — no invalid object may enter app state even if a
+        // preview row was edited into a bad state (NaN time, non-positive dose).
+        const allValid = previewEvents.every(ev =>
+            Number.isFinite(ev.timeH) && Number.isFinite(ev.doseMG) && ev.doseMG > 0);
+        if (!allValid) {
+            showDialog('alert', t('batch.invalid_time'));
+            return;
+        }
         const result = await showDialog('confirm', t('batch.warning'));
         if (result === 'confirm') {
             // Remember this drug's dose config only once the batch is actually
@@ -614,6 +651,9 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
         const s = parseLocalDate(startDate);
         const e = parseLocalDate(endDate);
         if (!s || !e || s > e) return false;
+        // F15: every time slot must hold a valid HH:mm time — a cleared slot
+        // would otherwise generate NaN timestamps.
+        if (timeSlots.length === 0 || timeSlots.some(slot => !isValidTimeSlot(slot))) return false;
         if (route === Route.patchRemove) return true;
         if (route === Route.patchApply && patchMode === 'rate') return !!patchRate;
         if (isAntiandrogen(safeEster)) return !!rawDose;
@@ -1027,14 +1067,24 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
                                 <div className="space-y-3">
                                     <label className="block text-xs font-bold" style={labelStyle}>{t('batch.time_slot')}</label>
                                     <div className="grid grid-cols-2 gap-3">
-                                        {timeSlots.map((slot, i) => (
-                                            <div key={i} className="flex items-center gap-2">
-                                                <span className="text-[10px] font-bold w-4 text-center" style={{ color: 'var(--text-tertiary)' }}>{i + 1}</span>
-                                                <input type="time" value={slot} onChange={e => updateTimeSlot(i, e.target.value)}
-                                                    className="flex-1 p-3 rounded-xl text-sm font-medium text-center outline-none focus:ring-2 focus:ring-[var(--accent-300)]"
-                                                    style={inputStyle} />
-                                            </div>
-                                        ))}
+                                        {timeSlots.map((slot, i) => {
+                                            const invalid = !isValidTimeSlot(slot);
+                                            return (
+                                                <div key={i} className="flex items-start gap-2">
+                                                    <span className="text-[10px] font-bold w-4 text-center pt-3" style={{ color: 'var(--text-tertiary)' }}>{i + 1}</span>
+                                                    <div className="flex-1">
+                                                        <input type="time" value={slot} onChange={e => updateTimeSlot(i, e.target.value)}
+                                                            className="w-full p-3 rounded-xl text-sm font-medium text-center outline-none focus:ring-2 focus:ring-[var(--accent-300)]"
+                                                            style={invalid ? { ...inputStyle, borderColor: '#ef4444' } : inputStyle} />
+                                                        {invalid && (
+                                                            <p className="mt-1 text-[10px] font-medium" style={{ color: '#ef4444' }}>
+                                                                {t('batch.invalid_time')}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 </div>
                             </>
