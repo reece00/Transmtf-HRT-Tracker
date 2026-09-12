@@ -286,6 +286,25 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
         return () => clearInterval(timer);
     }, []);
 
+    // React to "clear local data" (logout with data clearing, initiated in
+    // AuthContext): reset all in-memory medical state so the cleared records
+    // cannot be resurrected by a later setEvents(prev => [...prev, ...]) (F01).
+    // markExternalUpdate keeps the resulting persistence effects from stamping
+    // fake "last modified" timestamps; the derived effects then clear the
+    // simulation, personal model, CI bands and stored model on their own.
+    useEffect(() => {
+        const handleClearLocalData = () => {
+            markExternalUpdate('events');
+            markExternalUpdate('labResults');
+            markExternalUpdate('gelProducts');
+            setEvents([]);
+            setLabResults([]);
+            setGelProducts([]);
+        };
+        window.addEventListener('hrt-clear-local-data', handleClearLocalData);
+        return () => window.removeEventListener('hrt-clear-local-data', handleClearLocalData);
+    }, []);
+
     useEffect(() => {
         const handleStorageChange = (e: StorageEvent) => {
             const syncKeys = ['hrt-events', 'hrt-lab-results', 'hrt-calibration-model', CALIBRATION_MODE_KEY, APPLY_E2_LEARNING_TO_CPA_KEY, APPLY_CPA_INHIBITION_TO_E2_KEY, THEME_COLOR_KEY, THEME_MODE_KEY, DARK_MODE_KEY, GEL_PRODUCTS_KEY];

@@ -120,6 +120,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('hrt-last-known-cloud-updated');
         localStorage.removeItem('hrt-last-known-cloud-hash');
         localStorage.removeItem('hrt-data-hash');
+
+        // Medical-adjacent stores that must not survive a "clear" either (F01):
+        // the learned personal model, custom gel registry, dose templates and
+        // per-drug dose memory can all reveal treatment details.
+        localStorage.removeItem('hrt-personal-model');
+        localStorage.removeItem('hrt-gel-products');
+        localStorage.removeItem('hrt-dose-templates');
+        localStorage.removeItem('hrt-dose-by-drug');
+        localStorage.removeItem('hrt-dose-last-drug');
+
+        // Storage alone is not enough: in-memory React state (events, labs,
+        // gel registry, derived model) would write the old records back on the
+        // next edit. Notify state holders so they reset too (F01).
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('hrt-clear-local-data'));
+        }
       }
     } finally {
       setLogoutInProgress(false);
