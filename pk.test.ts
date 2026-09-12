@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Route, Ester, ExtraKey, type DoseEvent, type LabResult } from './types';
 import {
     bicalutamideConcNgML,
@@ -28,7 +28,11 @@ import {
     getBioavailabilityMultiplier,
     getToE2Factor,
     resolveParams,
+    oneCompAmount,
+    interpolateConcentration_E2,
+    findPatchRemovalForApply,
 } from './pk';
+import { buildOUKalmanCalibration, OU_DEFAULT_PARAMS } from './calibration';
 import { computeSimulationWithCI, initPersonalModel, replayPersonalModel, replayPersonalModelTimeline, computeE2AtTimeWithTheta } from './personalModel';
 
 const HOUR = 1;
@@ -810,6 +814,205 @@ describe('dose-causality: a dose logged after all labs never moves the past', ()
             // Exact-per-point curves differ only by sub-grid interpolation error.
             expect(Math.abs(vb - va) / Math.max(va, 1)).toBeLessThan(0.02);
         }
+    });
+});
+
+describe('F03: simulation grid extends past the 14-day tail (no frozen "current value")', () => {
+    // Audit case: a single 5 mg EN injection at t = 0, then 60 quiet days.
+    const enEvent = (timeH: number): DoseEvent => ({
+        id: 'en-1', route: Route.injection, timeH, doseMG: 5, ester: Ester.EN, weightKG: 70, extras: {},
+    });
+
+    it('with endTimeH, interpolation at day 60 matches the direct curve (≈1.41, not the frozen 109.45)', () => {
+        const events = [enEvent(0)];
+        const sim = runSimulation(events, { endTimeH: 60 * DAY + 24 })!;
+        expect(sim).toBeTruthy();
+        // The grid really extends to the requested end.
+        expect(sim.timeH[sim.timeH.length - 1]).toBeCloseTo(60 * DAY + 24, 6);
+        const interpolated = interpolateConcentration_E2(sim, 60 * DAY)!;
+        const direct = computeE2AtTimeWithTheta(events, 60 * DAY, [0, 0]);
+        // Tight cross-check against the analytic per-event evaluation.
+        expect(Math.abs(interpolated - direct) / direct).toBeLessThan(0.02);
+        expect(interpolated).toBeCloseTo(direct, 1);
+        // And it must be the real decayed value, not the frozen tail (~109.45).
+        expect(interpolated).toBeLessThan(10);
+    });
+
+    it('default call (no opts) keeps the legacy 14-day tail unchanged', () => {
+        const events = [enEvent(0)];
+        const sim = runSimulation(events)!;
+        expect(sim.timeH[sim.timeH.length - 1]).toBeCloseTo(14 * DAY, 6);
+        // Beyond the tail the curve clamps at the last grid point (legacy freeze).
+        const at60 = interpolateConcentration_E2(sim, 60 * DAY)!;
+        const tail = sim.concPGmL_E2[sim.concPGmL_E2.length - 1];
+        expect(at60).toBe(tail);
+        expect(at60).toBeGreaterThan(50); // the stale-but-plausible frozen value
+    });
+
+    it('endTimeH only ever EXTENDS the grid: the 14-day floor still wins when it is later', () => {
+        const events = [enEvent(0)];
+        const sim = runSimulation(events, { endTimeH: 24 })!; // before the 14-day tail
+        expect(sim.timeH[sim.timeH.length - 1]).toBeCloseTo(14 * DAY, 6);
+        const simLater = runSimulation(events, { endTimeH: 60 * DAY })!;
+        expect(simLater.timeH[simLater.timeH.length - 1]).toBeCloseTo(60 * DAY, 6);
+    });
+});
+
+describe('F04: OU-Kalman calibrates the drug-only lab portion (no baseline double-count)', () => {
+    const evEvent: DoseEvent = {
+        id: 'ev-1', route: Route.injection, timeH: 0, doseMG: 5, ester: Ester.EV, weightKG: 70, extras: {},
+    };
+    const BASELINE = 40;
+    // One pre-dose lab establishing the baseline and one post-dose lab whose
+    // TOTAL equals drug(72 h) + baseline — the audit's double-count setup.
+    const drug72 = computeE2AtTimeWithTheta([evEvent], 72, [0, 0]);
+    const labs: LabResult[] = [
+        { id: 'pre', timeH: -24, concValue: BASELINE, unit: 'pg/ml' },
+        { id: 'post', timeH: 72, concValue: drug72 + BASELINE, unit: 'pg/ml' },
+    ];
+
+    const interpAt = (timeH: number[], values: number[], t: number) => {
+        let lo = 0, hi = timeH.length - 1;
+        while (hi - lo > 1) { const m = (lo + hi) >> 1; if (timeH[m] <= t) lo = m; else hi = m; }
+        const f = (t - timeH[lo]) / (timeH[hi] - timeH[lo]);
+        return values[lo] + (values[hi] - values[lo]) * f;
+    };
+
+    it('ou-kalman output at the lab time matches a baseline-subtracted calibration and beats the old double-count', () => {
+        const events = [evEvent];
+        const sim = runSimulation(events)!;
+        const state = replayPersonalModel(events, labs);
+        expect(state.baselinePGmL).toBeCloseTo(BASELINE, 6);
+
+        const ci = computeSimulationWithCI(sim, events, state, false, labs, 'ou-kalman', false, 'retrospective');
+        const out = interpAt(ci.timeH, ci.e2Adjusted, 72);
+
+        // Manually computed baseline-subtracted calibration — the locked semantics.
+        const ou = buildOUKalmanCalibration(sim, labs, OU_DEFAULT_PARAMS, 'smooth', { baselineAt: () => BASELINE });
+        const c0 = interpAt(sim.timeH, sim.concPGmL_E2, 72);
+        const expected = BASELINE + Math.max(c0, 0.1) * Math.exp(interpAt(sim.timeH, ou.m, 72) + 0.5 * interpAt(sim.timeH, ou.P, 72));
+        expect(out).toBeCloseTo(expected, 3);
+
+        // The old behaviour fed the TOTAL into the ratio and added the baseline
+        // again on output (audit: 382.5 instead of ~360.8). It must be gone.
+        const ouOld = buildOUKalmanCalibration(sim, labs, OU_DEFAULT_PARAMS, 'smooth');
+        const oldStyle = BASELINE + Math.max(c0, 0.1) * Math.exp(interpAt(sim.timeH, ouOld.m, 72) + 0.5 * interpAt(sim.timeH, ouOld.P, 72));
+        expect(out).toBeLessThan(oldStyle - 10);
+        expect(out).toBeGreaterThan(340);
+        expect(out).toBeLessThan(375);
+    });
+
+    it('baselineAt is consulted per lab time (sim-grid independent) and at-baseline labs are skipped, not clamped', () => {
+        const events = [evEvent];
+        const sim = runSimulation(events)!;
+
+        const spy = vi.fn(() => BASELINE);
+        buildOUKalmanCalibration(sim, labs, OU_DEFAULT_PARAMS, 'smooth', { baselineAt: spy });
+        expect(spy).toHaveBeenCalledWith(-24);
+        expect(spy).toHaveBeenCalledWith(72);
+
+        // A lab whose total equals the baseline carries no drug information:
+        // it must be skipped, leaving the filter at the prior (m ≈ mu = 0).
+        // The second lab sits BEFORE the dose, where the drug curve is exactly
+        // 0 — the ratio is undefined there and must also be skipped (no NaN/Inf).
+        const flat: LabResult[] = [
+            { id: 'a', timeH: 72, concValue: BASELINE, unit: 'pg/ml' },
+            { id: 'b', timeH: -20, concValue: 200, unit: 'pg/ml' },
+        ];
+        const ou = buildOUKalmanCalibration(sim, flat, OU_DEFAULT_PARAMS, 'smooth', { baselineAt: () => BASELINE });
+        for (let i = 0; i < sim.timeH.length; i += 97) {
+            expect(Number.isFinite(ou.m[i])).toBe(true);
+            expect(Number.isFinite(ou.P[i])).toBe(true);
+        }
+        const idx72 = sim.timeH.findIndex(t => Math.abs(t - 72) < 1);
+        if (idx72 >= 0) expect(Math.abs(ou.m[idx72])).toBeLessThan(1e-9);
+    });
+});
+
+describe('F22: patch removal targets one physical patch', () => {
+    // Default patch kinetics (resolveParams): k1 = 0.0075, F = 1 (E2), k3 = kClear.
+    const patchApply = (id: string, timeH: number, doseMG = 0.1): DoseEvent => ({
+        id, route: Route.patchApply, timeH, doseMG, ester: Ester.E2, weightKG: 70,
+        extras: { patchInstanceId: id },
+    });
+    const patchRemove = (id: string, timeH: number, target?: string): DoseEvent => ({
+        id, route: Route.patchRemove, timeH, doseMG: 0, ester: Ester.E2, weightKG: 70,
+        extras: target !== undefined ? { patchRemovalFor: target } : {},
+    });
+    const stripIds = (events: DoseEvent[]): DoseEvent[] =>
+        events.map(e => ({ ...e, extras: {} }));
+
+    // Analytic single-patch contributions (one-compartment patch model).
+    const pp = resolveParams(patchApply('x', 0));
+    const patchConc = (tau: number) => oneCompAmount(tau, 0.1, pp) * 1e9 / (CorePK.vdPerKG * 70 * 1000);
+
+    it('audit case: one removal terminates only its target patch, the other keeps wearing', () => {
+        // p1 applied at 0 h, p2 at 24 h, p1 removed at 48 h → at 60 h:
+        // expected = p1 post-removal tail (12 h decay) + p2 still absorbing (36 h).
+        const events = [patchApply('p1', 0), patchApply('p2', 24), patchRemove('r1', 48, 'p1')];
+        const expected = patchConc(48) * Math.exp(-pp.k3 * 12) + patchConc(36);
+        const actual = computeE2AtTimeWithTheta(events, 60, [0, 0]);
+        expect(Math.abs(actual - expected) / expected).toBeLessThan(0.01);
+
+        // The old bug removed BOTH patches (both-removed sum) — clearly different.
+        const bothRemoved = patchConc(48) * Math.exp(-pp.k3 * 12) + patchConc(24) * Math.exp(-pp.k3 * 12);
+        expect(actual).toBeGreaterThan(bothRemoved * 20);
+
+        // Same pairing through the simulation grid (pk.ts PrecomputedEventModel).
+        const sim = runSimulation(events)!;
+        const simVal = interpolateConcentration_E2(sim, 60)!;
+        expect(Math.abs(simVal - expected) / expected).toBeLessThan(0.01);
+    });
+
+    it('legacy no-id data reproduces the old first-removal-after-apply behaviour exactly', () => {
+        // No extras ids anywhere: the single removal after both applies
+        // terminates BOTH (the pre-F22 behaviour — regression guard).
+        const legacy = stripIds([patchApply('p1', 0), patchApply('p2', 24), patchRemove('r1', 48)]);
+        const actual = computeE2AtTimeWithTheta(legacy, 60, [0, 0]);
+        const expected = patchConc(48) * Math.exp(-pp.k3 * 12) + patchConc(24) * Math.exp(-pp.k3 * 12);
+        expect(actual).toBeCloseTo(expected, 6);
+        // And a mixed history falls back per-removal: a no-id removal still uses
+        // the legacy rule even when another removal carries a target.
+        const mixed = [patchApply('p1', 0), patchApply('p2', 24), patchRemove('r1', 48, 'p1'), patchRemove('r2', 72)];
+        expect(findPatchRemovalForApply(mixed[1], mixed)?.id).toBe('r2');
+    });
+
+    it('pairing helper: targeted vs legacy vs unknown targets', () => {
+        const p1 = patchApply('p1', 0);
+        const p2 = patchApply('p2', 24);
+        const rP1 = patchRemove('r1', 48, 'p1');
+        const rUnknown = patchRemove('r2', 60, 'nope');
+        expect(findPatchRemovalForApply(p1, [p1, p2, rP1])?.id).toBe('r1');
+        expect(findPatchRemovalForApply(p2, [p1, p2, rP1])).toBeUndefined();
+        // Unknown targeted id removes nothing and never falls back to legacy.
+        expect(findPatchRemovalForApply(p1, [p1, rUnknown, rP1])?.id).toBe('r1');
+        expect(findPatchRemovalForApply(p2, [p2, rUnknown])).toBeUndefined();
+    });
+
+    it('same-time replacement: an id-targeted removal at the apply time pairs (zero wear)', () => {
+        const p1 = patchApply('p1', 10);
+        const rSame = patchRemove('r1', 10, 'p1');
+        expect(findPatchRemovalForApply(p1, [p1, rSame])?.id).toBe('r1');
+        // Wear duration 0 → the patch delivers nothing at any later time.
+        expect(computeE2AtTimeWithTheta([p1, rSame], 34, [0, 0])).toBeCloseTo(0, 9);
+    });
+
+    it('repeated targeted removals: the earliest one wins', () => {
+        const p1 = patchApply('p1', 0);
+        const rA = patchRemove('rA', 36, 'p1');
+        const rB = patchRemove('rB', 48, 'p1');
+        expect(findPatchRemovalForApply(p1, [p1, rA, rB])?.id).toBe('rA');
+        const actual = computeE2AtTimeWithTheta([p1, rA, rB], 60, [0, 0]);
+        const expected = patchConc(36) * Math.exp(-pp.k3 * (60 - 36));
+        expect(actual).toBeCloseTo(expected, 6);
+    });
+
+    it('a targeted removal that matches no apply leaves the patch wearing (no NaN, no legacy fallback)', () => {
+        const p1 = patchApply('p1', 0);
+        const rUnknown = patchRemove('r1', 48, 'ghost');
+        const actual = computeE2AtTimeWithTheta([p1, rUnknown], 60, [0, 0]);
+        expect(actual).toBeCloseTo(patchConc(60), 6);
+        expect(Number.isFinite(actual)).toBe(true);
     });
 });
 

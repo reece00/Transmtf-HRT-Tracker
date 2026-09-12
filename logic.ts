@@ -17,6 +17,8 @@ export {
     formatAntiandrogenConc,
     bicalutamideConcNgML,
     computeBicalutamideAmount,
+    findPatchRemovalForApply,
+    patchInstanceIdOf,
     ANTIANDROGENS,
     ANTIANDROGEN_ESTERS,
     BICA_PK,

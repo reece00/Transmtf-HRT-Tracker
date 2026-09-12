@@ -196,6 +196,39 @@ describe('Hybrid-MIPD causal vs retrospective semantics', () => {
     });
 });
 
+describe('F22: patch removal targets one physical patch (MIPD forward model)', () => {
+    const DAY24 = 24;
+    const patchApply = (id: string, timeH: number, doseMG = 0.1): DoseEvent => ({
+        id, route: Route.patchApply, timeH, doseMG, ester: Ester.E2, weightKG: 70,
+        extras: { patchInstanceId: id },
+    });
+    const patchRemove = (id: string, timeH: number, target?: string): DoseEvent => ({
+        id, route: Route.patchRemove, timeH, doseMG: 0, ester: Ester.E2, weightKG: 70,
+        extras: target !== undefined ? { patchRemovalFor: target } : {},
+    });
+
+    it('a targeted removal terminates only its patch (η = 0 matches the EKF forward model)', () => {
+        const events = [patchApply('p1', 0), patchApply('p2', DAY24), patchRemove('r1', 2 * DAY24, 'p1')];
+        const sorted = [...events].sort((a, b) => a.timeH - b.timeH);
+        const mipd = mipdDrugE2AtTimeSorted(sorted, 60, [0, 0, 0]);
+        const ekf = computeE2AtTimeWithTheta(events, 60, [0, 0]);
+        expect(mipd).toBeCloseTo(ekf, 6);
+        // p2 is still active, so the level must be far above both-removed.
+        expect(mipd).toBeGreaterThan(5);
+    });
+
+    it('legacy no-id data keeps the old both-applies-terminated behaviour', () => {
+        const legacy = [patchApply('p1', 0), patchApply('p2', DAY24), patchRemove('r1', 2 * DAY24)]
+            .map(e => ({ ...e, extras: {} }));
+        const sorted = [...legacy].sort((a, b) => a.timeH - b.timeH);
+        const mipd = mipdDrugE2AtTimeSorted(sorted, 60, [0, 0, 0]);
+        const ekf = computeE2AtTimeWithTheta(legacy, 60, [0, 0]);
+        expect(mipd).toBeCloseTo(ekf, 6);
+        expect(mipd).toBeLessThan(1); // both patches removed at 48 h → only tails
+    });
+});
+
+
 describe('GP residual layer', () => {
     it('returns a trivial correction below the anchor threshold', () => {
         const anchors: MipdAnchor[] = [

@@ -87,8 +87,26 @@ export enum ExtraKey {
     gelCoverage = "gelCoverage",
     // Co-applied topical product index (into GEL_COAPPLICATION_ORDER, pk.ts):
     // 0 none / 1 sunscreen (−16% AUC) / 2 moisturizer (+38% AUC). Absent/0 = none.
-    gelCoApplied = "gelCoApplied"
+    gelCoApplied = "gelCoApplied",
+    // Physical-patch identity for apply/remove pairing (F22). A patchApply records
+    // the instance id of the patch it applies (generated at apply time — the
+    // event's own id is used when this key is absent), and a patchRemove records
+    // WHICH apply it terminates. These two keys carry STRING event ids; every
+    // other extras key stays numeric.
+    patchInstanceId = "patchInstanceId",
+    patchRemovalFor = "patchRemovalFor"
 }
+
+/**
+ * Per-event metadata bag. Numeric PK fields keep their `number` type; the two
+ * patch-pairing keys carry string event ids. They are declared `string | number`
+ * so existing code that builds extras as `Partial<Record<ExtraKey, number>>`
+ * (batch entry, gel forms) stays assignable without modification.
+ */
+export type DoseEventExtras = Omit<Partial<Record<ExtraKey, number>>, ExtraKey.patchInstanceId | ExtraKey.patchRemovalFor> & {
+    [ExtraKey.patchInstanceId]?: string | number;
+    [ExtraKey.patchRemovalFor]?: string | number;
+};
 
 /**
  * A single medication event entered by the user.
@@ -104,7 +122,7 @@ export interface DoseEvent {
     doseMG: number; // Dose in mg (of the ester/compound), NOT E2-equivalent
     ester: Ester;
     weightKG: number; // Body weight at time of administration, in kg
-    extras: Partial<Record<ExtraKey, number>>;
+    extras: DoseEventExtras;
 }
 
 /**

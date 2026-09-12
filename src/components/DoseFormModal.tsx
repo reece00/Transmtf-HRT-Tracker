@@ -6,7 +6,7 @@ import { useAppData } from '../contexts/AppDataContext';
 import { prefillWeightKG } from '../utils/weight';
 import CustomSelect from './CustomSelect';
 import QuickDosePanel from './QuickDosePanel';
-import { getRouteIcon } from '../utils/helpers';
+import { getRouteIcon, formatTime } from '../utils/helpers';
 import {
     ROUTE_DISPLAY_ORDER, getAvailableEsters,
     isPresetDose, hasQuickDosePanel,
@@ -20,6 +20,7 @@ import {
     GelSite, GEL_SITE_ORDER, GEL_PRODUCTS, GEL_DEFAULT_PRODUCT_ID,
     GEL_COVERAGE_TEMPLATES, GEL_COVERAGE_DEFAULT_IDX, GEL_COVERAGE_MANUAL_IDX,
     resolveGelCoverageArea, GEL_COAPPLICATION_ORDER,
+    findPatchRemovalForApply, patchInstanceIdOf,
     type GelProductSpec,
 } from '../../logic';
 import { Calendar, X, Clock, Info, Save, Trash2, Bookmark, Check, Pencil } from 'lucide-react';
@@ -94,6 +95,37 @@ const formatGuideNumber = (val: number) => {
     return rounded.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
 };
 
+// F22: selector value meaning "keep the legacy pairing rule" (first removal
+// after the apply). Stored patchRemove events with no target stay loadable and
+// keep this semantics when re-saved.
+const PATCH_TARGET_LEGACY = "__legacy__";
+
+// Local strings for the patch-removal target picker. These live here (with the
+// app's full zh / zh-TW / en / ja coverage) rather than in
+// src/i18n/translations.ts, which is outside the scope of this change.
+const PATCH_TARGET_TEXT: Record<string, { label: string; legacy: string; none: string }> = {
+    zh: {
+        label: '移除哪一片',
+        legacy: '按原规则（最早）',
+        none: '该时间点没有仍在贴敷的贴片，无法记录移除。',
+    },
+    'zh-TW': {
+        label: '移除哪一片',
+        legacy: '依原規則（最早）',
+        none: '此時間點沒有仍在敷貼的貼片，無法記錄移除。',
+    },
+    en: {
+        label: 'Which patch to remove',
+        legacy: 'Legacy rule (earliest)',
+        none: 'No patch is still active at this time, so there is nothing to remove.',
+    },
+    ja: {
+        label: '除去するパッチ',
+        legacy: '従来のルール（最も早いもの）',
+        none: 'この時点で貼付中のパッチはありません。除去を記録できません。',
+    },
+};
+
 export interface DoseFormModalProps {
     isOpen: boolean;
     onClose: () => void;
@@ -103,10 +135,11 @@ export interface DoseFormModalProps {
 }
 
 const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToEdit, onSave, onDelete }) => {
-    const { t } = useTranslation();
+    const { t, lang } = useTranslation();
     const { showDialog } = useDialog();
     const { events: allEvents, gelProducts } = useAppData();
     const dateInputRef = useRef<HTMLInputElement>(null);
+    const ptText = PATCH_TARGET_TEXT[lang] ?? PATCH_TARGET_TEXT.en;
 
     // Presets + the user's custom gel products, for the gel product selector.
     const allGelProducts = useMemo(() => getAllGelProducts(gelProducts), [gelProducts]);
@@ -138,6 +171,11 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
     const [useCustomDose, setUseCustomDose] = useState(false);
     const [lastEditedField, setLastEditedField] = useState<'raw' | 'bio'>('bio');
     const [weightStr, setWeightStr] = useState("");
+
+    // F22: which physical patch a patchRemove terminates. "" = auto (default),
+    // PATCH_TARGET_LEGACY = legacy first-removal-after-apply rule, otherwise the
+    // instance id of the chosen active apply.
+    const [patchRemoveTarget, setPatchRemoveTarget] = useState<string>("");
 
     // Tracks the drug key the per-drug dose memory was last loaded for, so the
     // memory-restore effect only fires when the user actually switches compounds.
@@ -399,6 +437,64 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         }
     }, [isOpen, eventToEdit, route, allEvents]);
 
+    // F22: the ACTIVE patch applications at the removal time shown in the form
+    // (applies at/before it whose paired removal is still in the future). The
+    // event being edited is excluded from pairing so its own target still shows
+    // up as active — otherwise editing a removal would see "nothing to remove".
+    const patchRemoveCandidates = useMemo(() => {
+        if (!isOpen || route !== Route.patchRemove) return [];
+        let timeH = new Date(dateStr).getTime() / 3600000;
+        if (!Number.isFinite(timeH)) timeH = new Date().getTime() / 3600000;
+        const others = eventToEdit
+            ? allEvents.filter(e => e.id !== eventToEdit.id)
+            : allEvents;
+        return others
+            .filter(e => e.route === Route.patchApply && e.timeH <= timeH)
+            .filter(a => {
+                const paired = findPatchRemovalForApply(a, others);
+                return !paired || paired.timeH > timeH;
+            })
+            .sort((a, b) => a.timeH - b.timeH || String(a.id).localeCompare(String(b.id)));
+    }, [isOpen, route, dateStr, allEvents, eventToEdit]);
+
+    // Seed the target when the modal opens (edit: the stored target, or legacy
+    // when none is stored) and reset it for a fresh patchRemove record.
+    useEffect(() => {
+        if (!isOpen) return;
+        if (eventToEdit && eventToEdit.route === Route.patchRemove) {
+            const stored = eventToEdit.extras?.[ExtraKey.patchRemovalFor];
+            setPatchRemoveTarget(stored !== undefined ? String(stored) : PATCH_TARGET_LEGACY);
+        } else if (route === Route.patchRemove) {
+            setPatchRemoveTarget("");
+        }
+    }, [isOpen, eventToEdit, route]);
+
+    // The effective picker value: the stored/selected target while it still
+    // resolves to an active apply, otherwise the default — the earliest active
+    // apply (matches the legacy outcome for the common single-patch case), or
+    // the legacy rule when nothing is active.
+    const resolvedPatchRemoveTarget = (() => {
+        if (patchRemoveTarget === PATCH_TARGET_LEGACY) return PATCH_TARGET_LEGACY;
+        if (patchRemoveTarget) {
+            const found = patchRemoveCandidates.find(c => patchInstanceIdOf(c) === patchRemoveTarget);
+            if (found) return patchRemoveTarget;
+        }
+        return patchRemoveCandidates.length > 0
+            ? patchInstanceIdOf(patchRemoveCandidates[0])
+            : PATCH_TARGET_LEGACY;
+    })();
+
+    const patchApplyLabel = (a: DoseEvent): string => {
+        const rate = a.extras?.[ExtraKey.releaseRateUGPerDay];
+        const dose = (typeof rate === 'number' && rate > 0)
+            ? `${rate} µg/d`
+            : `${parseFloat(a.doseMG.toFixed(3))} mg`;
+        const d = new Date(a.timeH * 3600000);
+        const locale = lang === 'zh' || lang === 'zh-TW' ? 'zh-CN' : lang === 'ja' ? 'ja-JP' : 'en-US';
+        const dateLabel = d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+        return `${dose} · ${dateLabel} ${formatTime(d)}`;
+    };
+
     // Keep the manual-area field meaningful when the product changes: re-derive it
     // from the current coverage template (product default for the "label" coverage).
     const handleGelProductSelect = (val: string) => {
@@ -518,6 +614,7 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         if (isNaN(timeH)) {
             timeH = new Date().getTime() / 3600000;
         }
+        const eventId = eventToEdit?.id || uuidv4();
 
         // Route-determined esters always store as E2; otherwise use the outer
         // `safeEster` (computed once per render at component scope).
@@ -610,8 +707,30 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
             ? parsedWeight
             : prefillWeightKG(allEvents);
 
+        // F22: stamp the physical-patch instance id on application (used to pair
+        // a later removal with THIS patch; the engine falls back to the event id
+        // when the key is absent, e.g. records made before this change).
+        if (route === Route.patchApply) {
+            extras[ExtraKey.patchInstanceId] = eventId;
+        }
+
+        if (route === Route.patchRemove) {
+            // Nothing active at the chosen time → the removal would pair with no
+            // apply and silently remove nothing; block instead of saving garbage.
+            if (patchRemoveCandidates.length === 0) {
+                showDialog('alert', ptText.none);
+                setIsSaving(false);
+                return;
+            }
+            // The legacy option stores no target: the engine keeps the old
+            // first-removal-after-apply rule for it.
+            if (resolvedPatchRemoveTarget !== PATCH_TARGET_LEGACY) {
+                extras[ExtraKey.patchRemovalFor] = resolvedPatchRemoveTarget;
+            }
+        }
+
         const newEvent: DoseEvent = {
-            id: eventToEdit?.id || uuidv4(),
+            id: eventId,
             route,
             ester: effectiveEster,
             timeH,
@@ -659,24 +778,29 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
 
         const cfg = DOSE_GUIDE_CONFIG[route];
         if (!cfg) return null;
-        if (route === Route.patchApply && patchMode === "dose" && cfg.requiresRate) {
-            return { config: cfg, level: null, value: null, showRateHint: true as const };
-        }
-        const rawVal = route === Route.patchApply ? parseFloat(patchRate) : parseFloat(e2Dose);
-        const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
 
-        let level: DoseLevelKey | null = null;
-        if (value !== null) {
+        const grade = (value: number): DoseLevelKey => {
             const [low, medium, high, veryHigh] = cfg.thresholds;
-            if (value <= low) level = 'low';
-            else if (value <= medium) level = 'medium';
-            else if (value <= high) level = 'high';
-            else if (value <= veryHigh) level = 'very_high';
-            else level = 'above';
+            if (value <= low) return 'low';
+            if (value <= medium) return 'medium';
+            if (value <= high) return 'high';
+            if (value <= veryHigh) return 'very_high';
+            return 'above';
+        };
+
+        // 贴片“释放速率”模式的速率 (µg/天) 本身就是每日量，按每日阈值分级在量纲上正确。
+        if (route === Route.patchApply && patchMode === "rate") {
+            const rawVal = parseFloat(patchRate);
+            const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
+            return { config: cfg, level: value !== null ? grade(value) : null, value, showRateHint: false as const, neutral: false as const };
         }
 
-        return { config: cfg, level, value, showRateHint: false as const };
-    }, [route, patchMode, patchRate, e2Dose, safeEster]);
+        // 其余情况（口服 / 舌下 / 凝胶 / 注射，以及贴片“总剂量”模式）记录的是单次给药，
+        // 表单没有频率信息，无法按 每日/每周 分级 —— 只显示中性的“本次 X mg”，不评分、不显示参考范围。
+        const rawVal = route === Route.patchApply ? parseFloat(rawDose) : parseFloat(e2Dose);
+        const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
+        return { config: cfg, level: null, value, showRateHint: route === Route.patchApply, neutral: true as const };
+    }, [route, patchMode, patchRate, e2Dose, rawDose, safeEster]);
 
     const dialogRef = useFocusTrap(isOpen, onClose);
 
@@ -691,8 +815,10 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
             : 0.11)
         : currentTheta;
 
-    const guideUnitLabel = doseGuide?.config ? t(`dose.guide.unit.${doseGuide.config.unitKey}`) : "";
-    const guideRangeText = doseGuide?.config
+    const guideUnitLabel = doseGuide?.config
+        ? t(doseGuide.neutral ? 'dose.guide.unit.mg' : `dose.guide.unit.${doseGuide.config.unitKey}`)
+        : "";
+    const guideRangeText = doseGuide?.config && !doseGuide.neutral
         ? [
             `${t('dose.guide.level.low')} ≤ ${formatGuideNumber(doseGuide.config.thresholds[0])} ${guideUnitLabel}`,
             `${t('dose.guide.level.medium')} ≤ ${formatGuideNumber(doseGuide.config.thresholds[1])} ${guideUnitLabel}`,
@@ -701,11 +827,7 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         ].join(' · ')
         : "";
     const guideContainerClass = doseGuide
-        ? (
-            doseGuide.level
-                ? LEVEL_CONTAINER_STYLES[doseGuide.level]
-                : (doseGuide.showRateHint ? LEVEL_CONTAINER_STYLES.high : LEVEL_CONTAINER_STYLES.neutral)
-        )
+        ? (doseGuide.level ? LEVEL_CONTAINER_STYLES[doseGuide.level] : LEVEL_CONTAINER_STYLES.neutral)
         : LEVEL_CONTAINER_STYLES.neutral;
     const guideBadgeClass = doseGuide?.level ? LEVEL_BADGE_STYLES[doseGuide.level] : "";
 
@@ -808,8 +930,29 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
                     </div>
 
                     {route === Route.patchRemove && (
-                        <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/40 p-3 rounded-xl">
-                            {t('beta.patch_remove')}
+                        <div className="space-y-2">
+                            <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/40 p-3 rounded-xl">
+                                {t('beta.patch_remove')}
+                            </div>
+                            {patchRemoveCandidates.length > 0 ? (
+                                <CustomSelect
+                                    compactOnMobile
+                                    label={ptText.label}
+                                    value={resolvedPatchRemoveTarget}
+                                    onChange={(val) => setPatchRemoveTarget(val)}
+                                    options={[
+                                        { value: PATCH_TARGET_LEGACY, label: ptText.legacy },
+                                        ...patchRemoveCandidates.map(a => ({
+                                            value: patchInstanceIdOf(a),
+                                            label: patchApplyLabel(a),
+                                        })),
+                                    ]}
+                                />
+                            ) : (
+                                <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/40 p-3 rounded-xl">
+                                    {ptText.none}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -1022,7 +1165,7 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
                                     <Info className="w-5 h-5 shrink-0 mt-0.5" style={{ color: 'var(--text-tertiary)' }} />
                                     <div className="space-y-1">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t('dose.guide.title')}</span>
+                                            <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{t(doseGuide.neutral ? 'dose.guide.single_dose' : 'dose.guide.title')}</span>
                                             {doseGuide.level && (
                                                 <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${guideBadgeClass}`}>
                                                     {t(`dose.guide.level.${doseGuide.level}`)}
@@ -1030,7 +1173,9 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
                                             )}
                                         </div>
                                         <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                                            {t('dose.guide.current')}: {doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank')}
+                                            {doseGuide.neutral
+                                                ? (doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank'))
+                                                : `${t('dose.guide.current')}: ${doseGuide.value !== null ? `${formatGuideNumber(doseGuide.value)} ${guideUnitLabel}` : t('dose.guide.current_blank')}`}
                                         </p>
                                         {guideRangeText && (
                                             <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>

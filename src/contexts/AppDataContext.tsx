@@ -483,21 +483,40 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
     // weight is read from events; gel kinetics are resolved from the registry.
     // The registry is also set synchronously here (cheap) so main-thread
     // interpolation paths (e.g. OverviewView current values) stay correct.
+    //
+    // F03: the grid also extends to `endTimeH = now + 24h`, so the homepage
+    // "current E2" is a real grid point instead of the frozen 14-day tail. The
+    // effect re-checks on every currentTime tick (1 min); the freshness guard
+    // below skips the worker call while the stored grid already covers
+    // now + buffer, so a quiet history triggers at most ~one recompute per day
+    // (when the buffer is about to be exceeded), not one per minute.
+    const simulationForRef = useRef<{ events: DoseEvent[]; gelProducts: GelProductSpec[] } | null>(null);
     useEffect(() => {
+        if (events.length === 0) {
+            simulationForRef.current = null;
+            pkWorker.cancel('simulation');
+            setSimulation(null);
+            return;
+        }
+        const endTimeH = currentTime.getTime() / 3600000 + 24;
+        const gridEndH = simulation && simulation.timeH.length > 0
+            ? simulation.timeH[simulation.timeH.length - 1]
+            : -Infinity;
+        const fresh = simulationForRef.current?.events === events
+            && simulationForRef.current?.gelProducts === gelProducts;
+        if (fresh && endTimeH <= gridEndH) return;
+
         const seq = ++simulationSeqRef.current;
         setCustomGelProducts(gelProducts);
         pkWorker.cancel('simulation');
-        if (events.length > 0) {
-            trackCompute(pkWorker.run('simulation', { events, gelProducts }))
-                .then(res => {
-                    if (seq !== simulationSeqRef.current) return;
-                    setSimulation(res);
-                })
-                .catch(handleComputeError);
-        } else {
-            setSimulation(null);
-        }
-    }, [events, gelProducts]);
+        trackCompute(pkWorker.run('simulation', { events, gelProducts, endTimeH }))
+            .then(res => {
+                if (seq !== simulationSeqRef.current) return;
+                simulationForRef.current = { events, gelProducts };
+                setSimulation(res);
+            })
+            .catch(handleComputeError);
+    }, [events, gelProducts, currentTime, simulation]);
 
     // Rebuild personal model whenever events, labResults, or the custom-gel
     // registry change (gel calibration resolves kinetics from the registry).

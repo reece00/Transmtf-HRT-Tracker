@@ -137,12 +137,19 @@ export const OU_DEFAULT_PARAMS: OUCalibParams = {
  *   smoother so future labs refine past estimates — use for retrospective
  *   review. `'forward'` returns the forward filter only, so each point reflects
  *   just the labs at or before its time — use for the causal display mode.
+ * @param opts `baselineAt` (F04) supplies the endogenous baseline E2 (pg/mL)
+ *   knowable at a given lab time. When provided, the calibration learns from
+ *   the DRUG-derived portion of each lab only (`obs − baseline`), matching the
+ *   EKF observation convention; the baseline is added back exactly once on the
+ *   output side by the caller. Labs at/below baseline (no drug information) and
+ *   labs where the simulated drug curve is ~zero (ratio undefined) are skipped.
  */
 export function buildOUKalmanCalibration(
     sim: SimulationResult,
     labResults: LabResult[],
     params: OUCalibParams = OU_DEFAULT_PARAMS,
-    mode: OUKalmanMode = 'smooth'
+    mode: OUKalmanMode = 'smooth',
+    opts?: { baselineAt?: (timeH: number) => number }
 ): { m: number[]; P: number[] } {
     const n = sim.timeH.length;
     if (n === 0) return { m: [], P: [] };
@@ -160,9 +167,16 @@ export function buildOUKalmanCalibration(
         if (lab.timeH < tMin || lab.timeH > tMax) continue;
         const obs = convertToPgMl(lab.concValue, lab.unit);
         if (obs <= 0) continue;
+        // F04: subtract the endogenous baseline so the log-ratio only captures
+        // the drug-model mismatch — the baseline is added back once on output.
+        // A lab at/below baseline carries no drug information: skip it instead
+        // of feeding a clamped garbage ratio into the filter.
+        const baseline = Math.max(0, opts?.baselineAt?.(lab.timeH) ?? 0);
+        const obsDrug = obs - baseline;
+        if (!Number.isFinite(obsDrug) || obsDrug <= eps) continue;
         const c0 = interpolateConcentration_E2(sim, lab.timeH);
         if (c0 === null || c0 < eps) continue;
-        const z = Math.log(obs) - Math.log(c0);
+        const z = Math.log(obsDrug) - Math.log(Math.max(c0, eps));
         if (!Number.isFinite(z) || Math.abs(z) > 3.5) continue;
         labs.push({ timeH: lab.timeH, z });
     }

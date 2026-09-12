@@ -11,6 +11,7 @@ import {
     isAntiandrogen,
     ANTIANDROGENS,
     ANTIANDROGEN_ESTERS,
+    findPatchRemovalForApply,
 } from './pk';
 import {
     convertToPgMl,
@@ -155,7 +156,10 @@ function computeEventAmountWithKScale(
                    branch(doseSlow, params.F_slow, params.k1_slow, k3, tau);
         }
         case Route.patchApply: {
-            const remove = allEvents.find((e) => e.route === Route.patchRemove && e.timeH > event.timeH);
+            // F22: pair with the removal that TARGETS this physical patch;
+            // legacy removals without a target keep the old first-removal
+            // rule (shared helper, identical to pk.ts / mipd.ts).
+            const remove = findPatchRemovalForApply(event, allEvents);
             const wearH = (remove?.timeH ?? Number.MAX_VALUE) - event.timeH;
             if (params.rateMGh > 0) {
                 if (tau <= wearH) {
@@ -572,11 +576,17 @@ export function computeSimulationWithCI(
 
     if (calibrationModel === 'ou-kalman') {
         // Causal → forward filter only; retrospective → forward + RTS smoother.
+        // F04: pass the endogenous baseline (resolveState mirrors the EKF branch:
+        // causal sees only the baseline knowable at the lab's time, retrospective
+        // the final one) so the OU learns from the drug-derived lab portion only
+        // instead of double-counting the baseline in the multiplier and again on
+        // output below.
         const ou = buildOUKalmanCalibration(
             sim,
             labResults,
             OU_DEFAULT_PARAMS,
-            calibrationMode === 'causal' ? 'forward' : 'smooth'
+            calibrationMode === 'causal' ? 'forward' : 'smooth',
+            { baselineAt: (timeH: number) => baselineOf(resolveState(timeH)) }
         );
 
         for (let i = 0; i < n; i++) {

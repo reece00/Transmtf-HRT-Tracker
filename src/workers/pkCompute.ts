@@ -21,7 +21,7 @@ export function computePK(request: PKWorkerRequest): PKWorkerResponse {
         switch (request.type) {
             case 'simulation': {
                 if (request.gelProducts) setCustomGelProducts(request.gelProducts);
-                const simulation = runSimulation(request.events);
+                const simulation = runSimulation(request.events, { endTimeH: request.endTimeH });
                 return { type: 'simulation', id, simulation };
             }
             case 'personalModel': {

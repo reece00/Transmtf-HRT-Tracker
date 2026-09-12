@@ -1,4 +1,4 @@
-import { Route, Ester, ExtraKey, type DoseEvent, type SimulationResult, type ConcUnit } from './types';
+import { Route, Ester, ExtraKey, type DoseEvent, type DoseEventExtras, type SimulationResult, type ConcUnit } from './types';
 
 /**
  * Route-specific metadata for transdermal gel absorption.
@@ -304,7 +304,7 @@ export const GEL_COAPPLICATION_FACTORS: Record<GelCoApplication, number> = {
  * corrupt value or a future client's new option must never be silently reinterpreted
  * as e.g. moisturizer (+38%).
  */
-export function gelCoApplicationFactor(extras: Partial<Record<ExtraKey, number>> | undefined): number {
+export function gelCoApplicationFactor(extras: DoseEventExtras | undefined): number {
     const raw = extras?.[ExtraKey.gelCoApplied];
     if (typeof raw !== 'number' || !Number.isFinite(raw)) return 1.0;
     const idx = Math.round(raw);
@@ -666,7 +666,7 @@ export const SublingualTierParams = {
 export function getBioavailabilityMultiplier(
     route: Route,
     ester: Ester,
-    extras: Partial<Record<ExtraKey, number>> = {}
+    extras: DoseEventExtras = {}
 ): number {
     const mwFactor = getToE2Factor(ester);
 
@@ -912,6 +912,70 @@ export function oneCompAmount(tau: number, doseMG: number, p: PKParams): number 
 }
 
 /**
+ * The effective physical-instance id of a patch application: the id recorded in
+ * extras at apply time, defaulting to the event's own id (zero extra state).
+ * Stored values are normalised to string for comparison so hand-edited numeric
+ * ids still pair correctly.
+ */
+export function patchInstanceIdOf(event: DoseEvent): string {
+    const raw = event.extras?.[ExtraKey.patchInstanceId] ?? event.id;
+    return String(raw);
+}
+
+/**
+ * Find the removal event that terminates a patch application.
+ *
+ * Pairing rule (F22):
+ * - A removal R that records `extras.patchRemovalFor` pairs with apply A iff
+ *   `R.patchRemovalFor === patchInstanceIdOf(A)` and `R.timeH >= A.timeH`. The
+ *   earliest matching removal wins; a targeted removal whose id matches no
+ *   apply removes nothing (it never falls back to the legacy rule — that would
+ *   re-introduce the "one removal kills every overlapping patch" bug).
+ * - A removal WITHOUT `patchRemovalFor` uses the legacy rule: it terminates the
+ *   FIRST apply strictly before it (`R.timeH > A.timeH`, unchanged pre-F22
+ *   behaviour, so existing data reproduces bit-for-bit).
+ *
+ * Documented edge cases:
+ * - Same-time replacement: an id-targeted removal at exactly the apply time
+ *   pairs (`>=`), giving zero wear duration — the patch delivers nothing.
+ * - Repeated removals: only the earliest targeted removal terminates a given
+ *   apply; later ones target other instances or nothing.
+ * - Removal with no active patch: matches nothing; the apply model then wears
+ *   until `Number.MAX_VALUE` (unchanged legacy behaviour for that apply).
+ *
+ * `events` may be in any order; the earliest matching removal by (timeH, input
+ * order) is returned, mirroring the old `find` over a time-sorted list.
+ */
+export function findPatchRemovalForApply(apply: DoseEvent, events: DoseEvent[]): DoseEvent | undefined {
+    const applyId = patchInstanceIdOf(apply);
+    let bestTargeted: DoseEvent | undefined;
+    let bestTargetedTimeH = Infinity;
+    let bestLegacy: DoseEvent | undefined;
+    let bestLegacyTimeH = Infinity;
+    for (const ev of events) {
+        if (ev.route !== Route.patchRemove) continue;
+        const target = ev.extras?.[ExtraKey.patchRemovalFor];
+        if (target !== undefined) {
+            // Id-targeted removal: pair only with the referenced instance.
+            if (ev.timeH < apply.timeH) continue;
+            if (String(target) === applyId && ev.timeH < bestTargetedTimeH) {
+                bestTargeted = ev;
+                bestTargetedTimeH = ev.timeH;
+            }
+        } else {
+            // Legacy removal (no target id): first removal strictly after the
+            // apply — the exact pre-F22 pairing, kept for old data.
+            if (ev.timeH <= apply.timeH) continue;
+            if (ev.timeH < bestLegacyTimeH) {
+                bestLegacy = ev;
+                bestLegacyTimeH = ev.timeH;
+            }
+        }
+    }
+    return bestTargeted ?? bestLegacy;
+}
+
+/**
  * Precomputed per-event model wrapper.
  *
  * The class is kept local to this file because it is only an implementation
@@ -976,7 +1040,10 @@ class PrecomputedEventModel {
                 };
                 break;
             case Route.patchApply: {
-                const remove = allEvents.find(e => e.route === Route.patchRemove && e.timeH > startTime);
+                // F22: pair with the removal that TARGETS this physical patch
+                // (extras.patchRemovalFor === instance id); legacy removals
+                // without a target keep the old first-removal-after-apply rule.
+                const remove = findPatchRemovalForApply(event, allEvents);
                 const wearH = (remove?.timeH ?? Number.MAX_VALUE) - startTime;
 
                 this.model = (timeH: number) => {
@@ -1039,8 +1106,16 @@ export function weightAtTimeH(sortedEvents: DoseEvent[], t: number): number {
  * This function is kept pure: it only depends on the recorded events (each of
  * which carries its own body weight), which makes it a stable foundation for
  * later calibration layers.
+ *
+ * F03: the grid always covers the recorded events plus 14 days, AND — when
+ * `opts.endTimeH` is given — extends to at least that time. Callers that
+ * display a "current" value pass now+buffer here so interpolation at the
+ * current time is a real grid point instead of a frozen 14-day tail clamp.
  */
-export function runSimulation(events: DoseEvent[]): SimulationResult | null {
+export function runSimulation(
+    events: DoseEvent[],
+    opts?: { endTimeH?: number }
+): SimulationResult | null {
     if (events.length === 0) return null;
 
     const sortedEvents = [...events].sort((a, b) => a.timeH - b.timeH);
@@ -1049,7 +1124,10 @@ export function runSimulation(events: DoseEvent[]): SimulationResult | null {
         .map(e => ({ model: new PrecomputedEventModel(e, sortedEvents), ester: e.ester }));
 
     const startTime = sortedEvents[0].timeH - 24;
-    const endTime = sortedEvents[sortedEvents.length - 1].timeH + (24 * 14);
+    const endTime = Math.max(
+        sortedEvents[sortedEvents.length - 1].timeH + (24 * 14),
+        opts?.endTimeH ?? -Infinity
+    );
 
     // Determine the finest time resolution needed based on the routes present.
     // Sublingual peaks are narrow (~1–2 h wide) and need a small step to be

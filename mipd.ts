@@ -47,6 +47,7 @@ import {
     gelEventCentralAmount,
     weightAtTimeH,
     isAntiandrogen,
+    findPatchRemovalForApply,
 } from './pk';
 import { convertToPgMl } from './calibration';
 
@@ -178,7 +179,10 @@ function eventDrugAmountScaled(
                    branch(doseSlow, params.F_slow, k1s, k3, tau);
         }
         case Route.patchApply: {
-            const remove = allEvents.find((e) => e.route === Route.patchRemove && e.timeH > event.timeH);
+            // F22: pair with the removal that TARGETS this physical patch;
+            // legacy removals without a target keep the old first-removal
+            // rule (shared helper, identical to pk.ts / personalModel.ts).
+            const remove = findPatchRemovalForApply(event, allEvents);
             const wearH = (remove?.timeH ?? Number.MAX_VALUE) - event.timeH;
             if (params.rateMGh > 0) {
                 // Zero-order input: there is no first-order absorption rate, so

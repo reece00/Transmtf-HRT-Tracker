@@ -23,6 +23,12 @@ export type PKWorkerRequest =
         id: number;
         events: DoseEvent[];
         gelProducts?: GelProductSpec[];
+        /**
+         * F03: optional grid extension (hours since epoch). The simulation grid
+         * ends at max(lastEvent + 14d, endTimeH) so "current value" interpolation
+         * never freezes on the 14-day tail clamp.
+         */
+        endTimeH?: number;
     }
     | {
         type: 'personalModel';
