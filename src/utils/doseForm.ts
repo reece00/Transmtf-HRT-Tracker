@@ -216,9 +216,20 @@ export const getAllGelProducts = (custom: GelProductSpec[] = readCustomGelProduc
  * extremely unlikely to allocate colliding ids (multi-device safety).
  */
 const GEL_ID_SEQ_KEY = 'hrt-gel-id-seq';
+// Random start lives in [GEL_CUSTOM_ID_BASE, ID_RANDOM_CEIL): a ~2-billion-wide
+// range, so the birthday bound for two devices colliding is negligible.
+const ID_RANDOM_CEIL = 2_000_000_000;
+
+// Session-memory fallback of the high-water mark: if localStorage is unusable
+// (private mode, quota, Tauri quirks) we still must not hand out the same id
+// twice within this session — non-durable, but closed within the session.
+let memoryHighWater: number | null = null;
 
 const randomIdStart = (): number =>
-    GEL_CUSTOM_ID_BASE + Math.floor(Math.random() * 900_000);
+    GEL_CUSTOM_ID_BASE + Math.floor(Math.random() * (ID_RANDOM_CEIL - GEL_CUSTOM_ID_BASE));
+
+const isUsableSeq = (v: number): boolean =>
+    Number.isSafeInteger(v) && v >= GEL_CUSTOM_ID_BASE && v < Number.MAX_SAFE_INTEGER - 1;
 
 /** Next custom id: monotonic, never reused, collision-safe across devices. */
 export const nextGelProductId = (custom: GelProductSpec[]): number => {
@@ -226,21 +237,22 @@ export const nextGelProductId = (custom: GelProductSpec[]): number => {
     try {
         const raw = localStorage.getItem(GEL_ID_SEQ_KEY);
         const parsed = raw ? parseInt(raw, 10) : NaN;
-        seq = Number.isFinite(parsed) && parsed >= GEL_CUSTOM_ID_BASE ? parsed : randomIdStart();
+        seq = isUsableSeq(parsed) ? parsed : (memoryHighWater ?? randomIdStart());
     } catch {
-        seq = randomIdStart();
+        seq = memoryHighWater ?? randomIdStart();
     }
     // Also stay above every live product: the seq may predate an import or a
     // cloud sync that brought in higher ids than this device ever allocated.
-    // `seq` is the LAST allocated id, so the next id is at least seq + 1.
-    const next = Math.max(
-        seq + 1,
-        custom.reduce((max, p) => Math.max(max, p.id), GEL_CUSTOM_ID_BASE - 1) + 1,
-    );
+    // `seq` is the LAST allocated id, so the next id is at least seq + 1
+    // (isUsableSeq keeps seq+1 a safe integer; a corrupt huge live id is
+    // ignored rather than allowed to overflow into a duplicate).
+    const liveMax = custom.reduce((max, p) => Math.max(max, p.id), GEL_CUSTOM_ID_BASE - 1);
+    const next = Math.max(seq + 1, Number.isSafeInteger(liveMax + 1) ? liveMax + 1 : GEL_CUSTOM_ID_BASE);
+    memoryHighWater = Math.max(memoryHighWater ?? GEL_CUSTOM_ID_BASE - 1, next);
     try {
         localStorage.setItem(GEL_ID_SEQ_KEY, String(next));
     } catch {
-        /* ignore */
+        /* non-durable; the session-memory fallback still prevents reuse here */
     }
     return next;
 };
