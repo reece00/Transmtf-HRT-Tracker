@@ -425,6 +425,16 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
 
+    // F01: logout-with-clear wipes `hrt-dose-templates` from storage. The list
+    // above is loaded once at mount and kept in memory, so without this the
+    // stale copy would be written back by the next save/delete — resurrecting
+    // templates the user just cleared.
+    useEffect(() => {
+        const handleClear = () => setTemplates([]);
+        window.addEventListener('hrt-clear-local-data', handleClear);
+        return () => window.removeEventListener('hrt-clear-local-data', handleClear);
+    }, []);
+
     const applyTemplate = (tpl: DoseTemplate) => {
         // Claim the target drug key up-front so the per-drug restore effect does
         // not overwrite the template's dose when route/ester change below.
