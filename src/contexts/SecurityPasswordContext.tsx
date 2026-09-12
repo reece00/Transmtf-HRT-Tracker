@@ -233,16 +233,17 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
   // and B would inherit A's verified flag / in-memory PIN. Reset the whole
   // security-session state whenever the account identity changes. Declared
   // BEFORE the auth-change effect so a fresh account always starts from a
-  // clean slate (including the live failure-flag ref and the in-flight check
-  // marker — otherwise B's first check could be suppressed by A's marker or
-  // evaluated against A's passwordVerificationFailed).
+  // clean slate (including the live failure-flag ref). The in-flight check
+  // marker is NOT reset here: it is keyed by session generation, so a new
+  // account's check is never suppressed by an older session's marker, and
+  // clearing it would let React StrictMode's effect replay launch duplicate
+  // same-session checks (F18 follow-up review).
   useEffect(() => {
     setIsVerified(false);
     setSecurityPassword(null);
     setPasswordVerificationFailed(false);
     passwordVerificationFailedRef.current = false;
     setIsAutoVerifying(false);
-    checkingRef.current = null;
   }, [user?.username]);
 
   // Check security password status on auth change

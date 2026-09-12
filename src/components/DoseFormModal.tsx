@@ -546,7 +546,15 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         return () => window.removeEventListener('hrt-clear-local-data', handleClear);
     }, []);
 
-    const applyTemplate = (tpl: DoseTemplate) => {
+    const applyTemplate = async (tpl: DoseTemplate) => {
+        // F09 review: warn BEFORE any state is touched when a gel template
+        // predates the gel-parameter fields, so the user sees the notice first
+        // and then deliberately confirms the product/application parameters
+        // already on the form (they are NOT overwritten in this case).
+        const incompleteGel = isGelTemplateIncomplete(tpl);
+        if (incompleteGel) {
+            await showDialog('alert', t('template.incomplete_gel'));
+        }
         // Claim the target drug key up-front so the per-drug restore effect does
         // not overwrite the template's dose when route/ester change below.
         prevDrugKeyRef.current = drugKeyOf(tpl.route, tpl.ester);
@@ -561,13 +569,13 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
         setUseCustomTheta(tpl.useCustomTheta);
         setCustomTheta(tpl.customTheta);
         // F09: restore the full gel administration context (product + coverage
-        // + area + wash + co-application). A template saved before these fields
-        // existed must NOT silently reuse whatever the form currently holds —
-        // surface an explicit "template incomplete" notice instead.
+        // + area + wash + co-application) for complete templates, and mark the
+        // last-event prefill as done either way so the prefill effect (which
+        // fires when route switches to gel) cannot overwrite the template's
+        // values with "whatever was used last time".
         if (tpl.route === Route.gel) {
-            if (isGelTemplateIncomplete(tpl)) {
-                showDialog('alert', t('template.incomplete_gel'));
-            } else {
+            gelPrefilledRef.current = true;
+            if (!incompleteGel) {
                 setGelProductId(tpl.gelProductId!);
                 setGelCoverage(tpl.gelCoverage ?? GEL_COVERAGE_DEFAULT_IDX);
                 setGelArea(tpl.gelArea ?? "");
