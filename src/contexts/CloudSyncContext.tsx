@@ -585,6 +585,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     // True while this resolver still owns the conflict UI and the sync lock.
     let current = true;
+    // F10: the remote must explicitly confirm the upload before we stamp sync
+    // time or close the dialog — a failed push keeps the conflict open and
+    // retryable instead of masquerading as success.
+    let pushed = false;
 
     try {
       isSyncingRef.current = true;
@@ -596,9 +600,9 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // 'system' display mode the derived dark flag changes on its own when
         // the OS theme flips. The cloud and merge branches already re-read.
         const currentLocal = getLocalDataSnapshot();
-        await pushLocalDataToCloud({ ...currentLocal, lastModified: now, lastDataUpdated: now });
+        pushed = await pushLocalDataToCloud({ ...currentLocal, lastModified: now, lastDataUpdated: now });
         current = getSessionGeneration() === generation;
-        if (current) {
+        if (current && pushed) {
           localStorage.setItem('hrt-last-modified', now);
           localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         }
@@ -612,7 +616,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
-        await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
+        pushed = await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
         current = getSessionGeneration() === generation;
       } else if (resolution === 'merge' && mergedData) {
         current = getSessionGeneration() === generation;
@@ -621,13 +625,20 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
-        await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
+        pushed = await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
         current = getSessionGeneration() === generation;
       }
 
       if (!current) {
         // Session changed while resolving — skip all stamps; the finally
         // block still releases the conflict/sync locks.
+        return;
+      }
+      if (!pushed) {
+        // F10: upload failed (pushLocalDataToCloud already set syncError). Do
+        // NOT stamp sync time or close the dialog — the user keeps their
+        // choice and can retry. (For cloud/merge the local copy was already
+        // applied; the next sync will re-detect the divergence.)
         return;
       }
       const syncNow = new Date();
@@ -640,9 +651,11 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } finally {
       // Instance-scoped cleanup: only clear the conflict UI if it is still
       // THIS resolver's conflict — a stale finally must never erase a new
-      // session's conflict modal (F02 re-review). The sync lock is a singleton
-      // this operation holds, so it is always released.
-      if (pendingConflictStateRef.current === conflict) {
+      // session's conflict modal (F02 re-review), and a FAILED push must not
+      // close the dialog either (F10: keep the user's choice retryable).
+      // The sync lock is a singleton this operation holds, so it is always
+      // released.
+      if (pushed && pendingConflictStateRef.current === conflict) {
         updatePendingConflict(null);
         conflictPendingRef.current = false;
       }
