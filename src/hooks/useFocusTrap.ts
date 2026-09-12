@@ -21,7 +21,7 @@ const modalStack: symbol[] = [];
  * - Closes the dialog on Escape (only when topmost)
  * - Restores focus to the previously focused element when closed
  */
-export function useFocusTrap(isOpen: boolean, onClose?: () => void) {
+export function useFocusTrap(isOpen: boolean, onClose?: () => void, opts?: { initialFocus?: 'first' | 'last' }) {
     const ref = useRef<HTMLDivElement>(null);
     const previousFocusRef = useRef<Element | null>(null);
     const idRef = useRef<symbol | null>(null);
@@ -42,7 +42,9 @@ export function useFocusTrap(isOpen: boolean, onClose?: () => void) {
 
         const timer = setTimeout(() => {
             const focusable = ref.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS);
-            focusable?.[0]?.focus();
+            if (!focusable || focusable.length === 0) return;
+            const target = opts?.initialFocus === 'last' ? focusable[focusable.length - 1] : focusable[0];
+            target?.focus();
         }, 50);
 
         return () => {
@@ -53,7 +55,7 @@ export function useFocusTrap(isOpen: boolean, onClose?: () => void) {
                 previousFocusRef.current.focus();
             }
         };
-    }, [isOpen]);
+    }, [isOpen, opts?.initialFocus]);
 
     // Trap Tab and handle Escape — only when this trap is topmost.
     useEffect(() => {

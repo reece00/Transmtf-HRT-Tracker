@@ -45,6 +45,9 @@ const Account: React.FC = () => {
         confirmText: t('account.keepData') || 'Keep Local Data',
         cancelText: t('account.clearData') || 'Clear All Data',
         thirdOption: t('common.cancel') || 'Cancel',
+        // Esc / dismissal must never trigger the destructive clear-data branch.
+        dismissValue: 'third',
+        initialFocus: 'last',
       },
     );
 

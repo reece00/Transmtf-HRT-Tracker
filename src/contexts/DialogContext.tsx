@@ -8,6 +8,15 @@ interface DialogOptions {
   confirmText?: string;
   cancelText?: string;
   thirdOption?: string;
+  /**
+   * What an Esc / backdrop dismissal resolves to for a 'confirm' dialog.
+   * Defaults to 'cancel' for backward compatibility. Callers whose 'cancel'
+   * button carries a destructive meaning must set this to a non-destructive
+   * value (e.g. 'third') so dismissal cannot trigger that branch.
+   */
+  dismissValue?: 'confirm' | 'cancel' | 'third';
+  /** Which focusable element receives focus when the dialog opens. */
+  initialFocus?: 'first' | 'last';
 }
 
 interface DialogContextType {
@@ -65,7 +74,13 @@ export const DialogProvider = ({ children }: { children: React.ReactNode }) => {
     setResolver(null);
   };
 
-  const dialogRef = useFocusTrap(isOpen, () => handleChoice(type === 'alert' ? 'confirm' : 'cancel'));
+  const dialogRef = useFocusTrap(isOpen, () => {
+    if (type === 'alert') {
+      handleChoice('confirm');
+    } else {
+      handleChoice(options.dismissValue ?? 'cancel');
+    }
+  }, { initialFocus: options.initialFocus });
 
   return (
     <DialogContext.Provider value={{ showDialog }}>
