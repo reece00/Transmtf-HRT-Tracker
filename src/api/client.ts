@@ -231,6 +231,18 @@ class ApiClient {
 
           const refreshed = await this.getSharedRefreshPromise();
 
+          // Final-review fix: NEVER retry after cancellation. logout() /
+          // account switches call cancelInflightRequests(), which aborts this
+          // request's controller; without this check the retry below would
+          // fire under the NEW session's token with the OLD session's body
+          // (e.g. A's medical payload uploaded with Bearer B-access).
+          if (controller.signal.aborted) {
+            return {
+              success: false,
+              error: 'Request cancelled',
+            } as ApiResponse<T>;
+          }
+
           if (refreshed) {
             // Retry the original request with the new token
             return await this.request<T>(endpoint, options, timeout, true, externalSignal);
@@ -435,6 +447,16 @@ class ApiClient {
         // Handle 401 Unauthorized - share one refresh, then retry exactly once
         if (response.status === 401 && this.refreshTokenCallback && !hasRetried) {
           const refreshed = await this.getSharedRefreshPromise();
+
+          // Final-review fix: never retry after cancellation (same rule as
+          // request() — a cancelled upload must not fire under a new session's
+          // token).
+          if (controller.signal.aborted) {
+            return {
+              success: false,
+              error: 'Request cancelled',
+            };
+          }
 
           if (refreshed) {
             // Retry the upload with the new token
