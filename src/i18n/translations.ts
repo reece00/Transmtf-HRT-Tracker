@@ -557,6 +557,7 @@ export const TRANSLATIONS_BASE = {
         "common.close": "关闭",
         "common.confirm": "确认",
         "common.submitting": "提交中...",
+        "common.computing": "计算中...",
         "btn.submit": "提交",
         "btn.confirm": "确认",
         "btn.create": "创建",
@@ -758,6 +759,10 @@ export const TRANSLATIONS_BASE = {
         "sync.conflict.on": "开",
         "sync.conflict.off": "关",
         "sync.conflict.order_only": "仅排序不同",
+        "sync.ownership_prompt": "本机存在不属于当前账号的本地记录。选择如何处理后才会恢复云同步：",
+        "sync.ownership_upload": "上传到当前账号",
+        "sync.ownership_clear": "清除本地数据",
+        "sync.ownership_later": "稍后决定",
     },
 
     en: {
@@ -1317,6 +1322,7 @@ export const TRANSLATIONS_BASE = {
         "common.close": "Close",
         "common.confirm": "Confirm",
         "common.submitting": "Submitting...",
+        "common.computing": "Computing...",
         "btn.submit": "Submit",
         "btn.confirm": "Confirm",
         "btn.create": "Create",
@@ -1518,6 +1524,10 @@ export const TRANSLATIONS_BASE = {
         "sync.conflict.on": "On",
         "sync.conflict.off": "Off",
         "sync.conflict.order_only": "Order differs only",
+        "sync.ownership_prompt": "This device holds local records that do not belong to the current account. Cloud sync stays paused until you choose what to do with them:",
+        "sync.ownership_upload": "Upload to this account",
+        "sync.ownership_clear": "Clear local data",
+        "sync.ownership_later": "Decide later",
     },
 };
 

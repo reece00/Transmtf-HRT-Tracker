@@ -7,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { API_ORIGIN } from '../api/config';
 import { useAppData, PER_DOSE_WEIGHT_MIGRATION_EVENT } from '../contexts/AppDataContext';
 import { formatDate, formatTime } from '../utils/helpers';
+import { clearAllLocalMedicalData } from '../utils/localDataCleanup';
 import { DoseEvent, LabResult } from '../../logic';
 
 import DoseFormModal from './DoseFormModal';
@@ -21,7 +22,7 @@ const MainLayout: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const { isAuthenticated, user } = useAuth();
-    const { events, setEvents, labResults, setLabResults, currentTime } = useAppData();
+    const { events, setEvents, labResults, setLabResults, currentTime, isComputing } = useAppData();
 
     const [isFormOpen, setIsFormOpen] = useState(false);
     const [editingEvent, setEditingEvent] = useState<DoseEvent | null>(null);
@@ -57,8 +58,7 @@ const MainLayout: React.FC = () => {
     useEffect(() => {
         const handler = () => {
             showDialog('alert', t('migration.per_dose_weight'));
-        };
-        window.addEventListener(PER_DOSE_WEIGHT_MIGRATION_EVENT, handler);
+        };        window.addEventListener(PER_DOSE_WEIGHT_MIGRATION_EVENT, handler);
         return () => window.removeEventListener(PER_DOSE_WEIGHT_MIGRATION_EVENT, handler);
     }, [showDialog, t]);
 
@@ -99,6 +99,35 @@ const MainLayout: React.FC = () => {
             setAvatarError(false);
         }
     }, [isAuthenticated, user]);
+
+    // FINAL-REVIEW (blocker 1): this device holds medical records that were
+    // never synced under the current account. Sync is paused (see canSync)
+    // until the user decides what should happen to them — otherwise the new
+    // account's first sync would upload the previous account's records.
+    const ownershipPromptShownRef = useRef(false);
+    useEffect(() => {
+        if (!isAuthenticated || ownershipPromptShownRef.current) return;
+        if (localStorage.getItem('hrt-data-ownership-pending') !== '1') return;
+        ownershipPromptShownRef.current = true;
+        (async () => {
+            const choice = await showDialog('confirm', t('sync.ownership_prompt'), {
+                confirmText: t('sync.ownership_upload'),
+                cancelText: t('sync.ownership_clear'),
+                thirdOption: t('sync.ownership_later'),
+            });
+            if (choice === 'confirm') {
+                // Upload: sync resumes and pushes the local records to this account.
+                localStorage.removeItem('hrt-data-ownership-pending');
+            } else if (choice === 'cancel') {
+                // Clear: wipe local records (storage + in-memory state holders).
+                clearAllLocalMedicalData();
+                localStorage.removeItem('hrt-data-ownership-pending');
+            }
+            // 'third' (later): keep the flag — sync stays paused; the prompt
+            // reappears on the next mount.
+            ownershipPromptShownRef.current = false;
+        })();
+    }, [isAuthenticated, showDialog, t]);
 
     const navItems = useMemo(() => [
         { id: 'home' as ViewKey, label: t('nav.home'), icon: Activity },
@@ -174,6 +203,15 @@ const MainLayout: React.FC = () => {
                 </nav>
 
                 <div className="flex items-center gap-3 min-w-[260px] justify-end">
+                    {/* F07: explicit PK computation status — a long history recomputes
+                        in a worker; without any indicator old values look final. */}
+                    {isComputing && (
+                        <span className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"
+                            style={{ color: 'var(--accent-500)', border: '1px solid var(--accent-200)', background: 'var(--accent-50)' }}>
+                            <span className="inline-block h-2 w-2 rounded-full animate-pulse" style={{ background: 'var(--accent-500)' }} aria-hidden="true" />
+                            {t('common.computing') || '计算中…'}
+                        </span>
+                    )}
                     <div className="flex items-center gap-2 rounded-full glass-subtle px-3 py-1.5 text-xs font-semibold"
                         style={{
                             color: 'var(--text-secondary)',
