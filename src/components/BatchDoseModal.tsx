@@ -599,14 +599,18 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
             return { config: cfg, level: value !== null ? grade(value) : null, value, showRateHint: false as const, neutral: false as const, labelKey: 'dose.guide.current' as const };
         }
 
-        // 口服 / 舌下 / 凝胶 / 注射：批量表单已知频率（timesPerDay / intervalDays），
-        // 因此对“计划层面”的等效 E2 总量分级，而不是单次剂量。
-        // e2Dose 是单次给药的等效 E2（与阈值的量纲一致）；注射按每周总量比较。
+        // 口服 / 舌下 / 凝胶 / 注射：批量表单已知完整频率（timesPerDay 次 / 每
+        // intervalDays 天），因此对“计划层面”的等效 E2 总量分级，而不是单次剂量。
+        // e2Dose 是单次给药的等效 E2（与阈值的量纲一致）。
+        // 最终审查修正：每日总量必须除以间隔天数（每 2 天给 2 次 × 2mg 的日均是
+        // 2mg/天，不是 4）；每周注射总量必须同时乘次数（5mg × 2 次/天 × 7 天 = 10mg/周）。
         const perAdminVal = parseFloat(e2Dose);
         const perAdmin = Number.isFinite(perAdminVal) && perAdminVal > 0 ? perAdminVal : null;
         const isWeekly = route === Route.injection;
         const total = perAdmin !== null
-            ? (isWeekly ? perAdmin * (7 / intervalDays) : perAdmin * timesPerDay)
+            ? (isWeekly
+                ? perAdmin * timesPerDay * (7 / intervalDays)
+                : perAdmin * timesPerDay / intervalDays)
             : null;
         return {
             config: cfg,
