@@ -4,6 +4,7 @@ import type { AuthTokens } from '../api/types';
 import { clearSecurityPassword } from '../utils/crypto';
 import { deleteCookie, getCookie, setCookie } from '../utils/cookies';
 import { setLogoutInProgress } from '../utils/authSessionState';
+import { clearAllLocalMedicalData, hasLocalMedicalData } from '../utils/localDataCleanup';
 
 interface User {
   username: string;
@@ -102,6 +103,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearStoredValue(DISPLAY_NAME_STORAGE_KEY);
     clearStoredValue(AVATAR_URL_STORAGE_KEY);
 
+    // FINAL-REVIEW FIX (blocker 1): the local wipe happens SYNCHRONOUSLY,
+    // BEFORE any network call. Previously it sat behind `await
+    // apiClient.logout(...)`, so a new login landing during that wait made the
+    // generation guard skip the clear entirely — "clear on logout" silently
+    // kept the data.
+    if (clearLocalData) {
+      clearAllLocalMedicalData();
+    }
+
     try {
       try {
         if (tokenToRevoke) {
@@ -123,40 +133,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await clearSecurityPassword(usernameToClear ?? undefined);
       } catch (error) {
         console.error('Failed to clear security password during logout:', error);
-      }
-
-      // Optionally clear local user data — still ours to clear only if the
-      // session did not change while the cookie cleanup was running.
-      if (clearLocalData && sessionGenerationRef.current === generation) {
-        localStorage.removeItem('hrt-events');
-        localStorage.removeItem('hrt-weight');
-        localStorage.removeItem('hrt-lab-results');
-        localStorage.removeItem('hrt-lang');
-        localStorage.removeItem('hrt-last-modified');
-        localStorage.removeItem('hrt-last-data-updated');
-        localStorage.removeItem('hrt-last-sync-time');
-        localStorage.removeItem('hrt-last-pull-time');
-        localStorage.removeItem('hrt-last-known-cloud-updated');
-        localStorage.removeItem('hrt-last-known-cloud-hash');
-        localStorage.removeItem('hrt-data-hash');
-
-        // Medical-adjacent stores that must not survive a "clear" either (F01):
-        // the learned personal model, custom gel registry, dose templates and
-        // per-drug dose memory can all reveal treatment details.
-        localStorage.removeItem('hrt-personal-model');
-        localStorage.removeItem('hrt-gel-products');
-        localStorage.removeItem('hrt-dose-templates');
-        localStorage.removeItem('hrt-dose-by-drug');
-        localStorage.removeItem('hrt-dose-last-drug');
-        // Plaintext pre-import snapshot holds a full copy of the records (F16).
-        localStorage.removeItem('hrt-pre-import-snapshot');
-
-        // Storage alone is not enough: in-memory React state (events, labs,
-        // gel registry, derived model) would write the old records back on the
-        // next edit. Notify state holders so they reset too (F01).
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('hrt-clear-local-data'));
-        }
       }
     } finally {
       setLogoutInProgress(false);
@@ -304,6 +280,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
 
+  // FINAL-REVIEW (blocker 1): the local records belong to whoever's data they
+  // are. If they were never synced under THIS account, block all cloud sync
+  // until the user explicitly decides (upload vs clear) — otherwise the new
+  // account's first sync would push the previous account's retained records
+  // into the new account's cloud.
+  const updateDataOwnershipFlag = (username: string) => {
+    const owner = localStorage.getItem('hrt-data-owner');
+    if (hasLocalMedicalData() && owner !== username) {
+      localStorage.setItem('hrt-data-ownership-pending', '1');
+    } else {
+      localStorage.removeItem('hrt-data-ownership-pending');
+    }
+  };
+
   const login = async (username: string, password: string, turnstileToken?: string) => {
     const response = await apiClient.login({
       username,
@@ -326,6 +316,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setStoredValue(TOKEN_STORAGE_KEY, access_token);
       setStoredValue(REFRESH_TOKEN_STORAGE_KEY, refresh_token);
       setStoredValue(USERNAME_STORAGE_KEY, username);
+      updateDataOwnershipFlag(username);
 
       return { success: true };
     }
@@ -355,6 +346,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setStoredValue(TOKEN_STORAGE_KEY, access_token);
       setStoredValue(REFRESH_TOKEN_STORAGE_KEY, refresh_token);
       setStoredValue(USERNAME_STORAGE_KEY, username);
+      updateDataOwnershipFlag(username);
 
       return { success: true };
     }
@@ -382,6 +374,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Always use OAuth avatar URL; clear any previously stored local avatar
     if (avatarUrl) setStoredValue(AVATAR_URL_STORAGE_KEY, avatarUrl);
     else clearStoredValue(AVATAR_URL_STORAGE_KEY);
+    updateDataOwnershipFlag(username);
   };
 
   return (
