@@ -9,6 +9,7 @@ import {
     DoseEvent, SimulationResult, LabResult,
     interpolateConcentration_E2, interpolateCompoundConcentration, convertToPgMl,
     pickPrimaryAntiandrogen, ANTIANDROGENS, formatAntiandrogenConc, Ester,
+    PERSONAL_E2_CEILING_PGML,
 } from '../../logic';
 import ResultChartStatic from './ResultChartStatic';
 import { API_ORIGIN } from '../api/config';
@@ -153,8 +154,12 @@ const ShareImageModal: React.FC<Props> = ({
     // ── Current values (mirror OverviewView logic) ──
     const rawE2 = simulation ? (interpolateConcentration_E2(simulation, h) || 0) : 0;
     const baseShift = (!hasPersonalModel && baselineE2PGmL && baselineE2PGmL > 0) ? baselineE2PGmL : 0;
-    const personalE2 = hasPersonalModel ? interpAt(simCI!.timeH, simCI!.e2Adjusted, h) : null;
-    const currentE2 = personalE2 ?? (rawE2 + baseShift);
+    // F13 final-review fix: a personal estimate at the model ceiling stays
+    // sourced from the personal curve (rendered with a "≥" qualifier), never
+    // silently swapped for the raw population value while the CI stays personal.
+    const personalE2Raw = hasPersonalModel ? interpAt(simCI!.timeH, simCI!.e2Adjusted, h) : null;
+    const personalE2Capped = personalE2Raw !== null && personalE2Raw >= PERSONAL_E2_CEILING_PGML;
+    const currentE2 = personalE2Raw !== null ? personalE2Raw : (rawE2 + baseShift);
 
     const rawCPA = (simulation && primaryAA) ? (interpolateCompoundConcentration(simulation, primaryAA, h) || 0) * aaScale : 0;
     const personalCPA = (hasPersonalCpaModel && aaCISeries) ? interpAt(simCI!.timeH, aaCISeries.adjusted, h) * aaScale : null;
@@ -585,6 +590,7 @@ const ShareImageModal: React.FC<Props> = ({
                                     {currentE2 > 0 || baselineLevel ? (
                                         <>
                                             <span style={{ fontSize: '110px', fontWeight: 900, color: accent500, lineHeight: 0.9, letterSpacing: '-0.03em' }}>
+                                                {personalE2Capped && <span style={{ fontSize: '60px', color: accent300 }}>≥ </span>}
                                                 {fmtE2(currentE2 > 0 ? currentE2 : baselineLevel!)}
                                             </span>
                                             <span style={{ fontSize: '26px', fontWeight: 800, color: accent300, marginBottom: '14px' }}>pg/mL</span>
@@ -614,13 +620,13 @@ const ShareImageModal: React.FC<Props> = ({
                                             </span>
                                         </div>
                                     )}
-                                    {personalE2 !== null && (
+                                    {personalE2Raw !== null && (
                                         <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', whiteSpace: 'nowrap' }}>
                                             <span style={{ fontSize: '13px', fontWeight: 800, color: accent300, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                                                 {t('chart.personal_model') || 'Personal'}
                                             </span>
                                             <span style={{ fontSize: '17px', fontWeight: 700, color: accent500 }}>
-                                                {personalE2.toFixed(1)} pg/mL
+                                                {personalE2Capped && '≥ '}{personalE2Raw.toFixed(1)} pg/mL
                                             </span>
                                         </div>
                                     )}

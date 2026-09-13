@@ -106,22 +106,22 @@ const PATCH_TARGET_LEGACY = "__legacy__";
 const PATCH_TARGET_TEXT: Record<string, { label: string; legacy: string; none: string }> = {
     zh: {
         label: '移除哪一片',
-        legacy: '按原规则（最早）',
+        legacy: '未指定（按旧规则配对，可能同时终止多片）',
         none: '该时间点没有仍在贴敷的贴片，无法记录移除。',
     },
     'zh-TW': {
         label: '移除哪一片',
-        legacy: '依原規則（最早）',
+        legacy: '未指定（依舊規則配對，可能同時終止多片）',
         none: '此時間點沒有仍在敷貼的貼片，無法記錄移除。',
     },
     en: {
         label: 'Which patch to remove',
-        legacy: 'Legacy rule (earliest)',
+        legacy: 'Unspecified (legacy pairing — may stop multiple patches)',
         none: 'No patch is still active at this time, so there is nothing to remove.',
     },
     ja: {
         label: '除去するパッチ',
-        legacy: '従来のルール（最も早いもの）',
+        legacy: '未指定（従来のルールでペアリング — 複数枚が同時に終了する場合があります）',
         none: 'この時点で貼付中のパッチはありません。除去を記録できません。',
     },
 };
