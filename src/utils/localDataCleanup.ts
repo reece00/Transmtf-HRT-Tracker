@@ -40,19 +40,25 @@ export function clearAllLocalMedicalData(): void {
     }
 }
 
-/** True when the device holds any medical records that sync could move. */
+/** True when the device holds any medical data that sync could move. */
 export function hasLocalMedicalData(): boolean {
     try {
-        const events = localStorage.getItem('hrt-events');
-        if (events) {
-            const parsed: unknown = JSON.parse(events);
-            if (Array.isArray(parsed) && parsed.length > 0) return true;
-        }
-        const labs = localStorage.getItem('hrt-lab-results');
-        if (labs) {
-            const parsed: unknown = JSON.parse(labs);
-            if (Array.isArray(parsed) && parsed.length > 0) return true;
-        }
+        const nonEmptyArray = (key: string): boolean => {
+            const raw = localStorage.getItem(key);
+            if (!raw) return false;
+            const parsed: unknown = JSON.parse(raw);
+            return Array.isArray(parsed) && parsed.length > 0;
+        };
+        // Final-review follow-up: cover EVERY data-bearing section the sync
+        // snapshot moves — not just events/labs. Weight, custom gel products
+        // and the learned personal model are all medical data that would
+        // otherwise upload into a different account.
+        if (nonEmptyArray('hrt-events')) return true;
+        if (nonEmptyArray('hrt-lab-results')) return true;
+        if (nonEmptyArray('hrt-gel-products')) return true;
+        if (localStorage.getItem('hrt-personal-model')) return true;
+        const weight = localStorage.getItem('hrt-weight');
+        if (weight && Number.isFinite(parseFloat(weight)) && parseFloat(weight) > 0) return true;
         return false;
     } catch {
         return false;

@@ -376,8 +376,13 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem('hrt-theme-mode', snapshot.themeMode);
     localStorage.setItem('hrt-dark-mode', snapshot.darkMode ? '1' : '0');
     localStorage.setItem('hrt-gel-products', JSON.stringify(snapshot.gelProducts ?? []));
+    // Final-review follow-up: restore must also REMOVE keys the pre-apply
+    // snapshot lacked — otherwise a failed cloud/merge resolution leaves the
+    // applied cloud timestamps behind and retries use stale freshness state.
     if (snapshot.lastModified) localStorage.setItem('hrt-last-modified', snapshot.lastModified);
+    else localStorage.removeItem('hrt-last-modified');
     if (snapshot.lastDataUpdated) localStorage.setItem(LAST_DATA_UPDATED_KEY, snapshot.lastDataUpdated);
+    else localStorage.removeItem(LAST_DATA_UPDATED_KEY);
     localStorage.setItem('hrt-data-hash', snapshot.dataHash);
     if (baseline.updated) localStorage.setItem(LAST_KNOWN_CLOUD_UPDATED_KEY, baseline.updated);
     else localStorage.removeItem(LAST_KNOWN_CLOUD_UPDATED_KEY);
