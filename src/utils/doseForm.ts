@@ -233,21 +233,46 @@ const isUsableSeq = (v: number): boolean =>
 
 /** Next custom id: monotonic, never reused, collision-safe across devices. */
 export const nextGelProductId = (custom: GelProductSpec[]): number => {
-    let seq: number;
+    const floor = GEL_CUSTOM_ID_BASE - 1;
+    let persisted: number | null = null;
     try {
         const raw = localStorage.getItem(GEL_ID_SEQ_KEY);
         const parsed = raw ? parseInt(raw, 10) : NaN;
-        seq = isUsableSeq(parsed) ? parsed : (memoryHighWater ?? randomIdStart());
+        if (isUsableSeq(parsed)) persisted = parsed;
     } catch {
-        seq = memoryHighWater ?? randomIdStart();
+        /* storage unreadable — memory fallback below */
     }
+    // Final-review fix (a): combine the persisted high-water with the session
+    // memory. When reads work but WRITES have been failing, the memory mark is
+    // newer — ignoring it handed out the same id twice.
+    const seq = Math.max(persisted ?? floor, memoryHighWater ?? floor);
+    if (persisted === null && memoryHighWater === null) {
+        // No durable or session history at all: start from a random offset so
+        // devices that later merge via cloud sync rarely collide.
+        return allocate(randomIdStart(), custom);
+    }
+    return allocate(seq, custom);
+};
+
+const allocate = (seq: number, custom: GelProductSpec[]): number => {
     // Also stay above every live product: the seq may predate an import or a
     // cloud sync that brought in higher ids than this device ever allocated.
     // `seq` is the LAST allocated id, so the next id is at least seq + 1
     // (isUsableSeq keeps seq+1 a safe integer; a corrupt huge live id is
     // ignored rather than allowed to overflow into a duplicate).
     const liveMax = custom.reduce((max, p) => Math.max(max, p.id), GEL_CUSTOM_ID_BASE - 1);
-    const next = Math.max(seq + 1, Number.isSafeInteger(liveMax + 1) ? liveMax + 1 : GEL_CUSTOM_ID_BASE);
+    const liveDerived = Number.isSafeInteger(liveMax + 1) ? liveMax + 1 : GEL_CUSTOM_ID_BASE;
+    let next = Math.max(seq + 1, liveDerived);
+    if (liveDerived > seq + 1) {
+        // Final-review fix (b): the live max came from products every synced
+        // device can see — deriving max+1 would give every device the SAME id.
+        // Jump by a random jitter to keep cross-device allocation practically
+        // unique, then resume monotonically from there.
+        next = liveDerived + Math.floor(Math.random() * 1_000_000);
+    }
+    if (!Number.isSafeInteger(next)) {
+        next = randomIdStart();
+    }
     memoryHighWater = Math.max(memoryHighWater ?? GEL_CUSTOM_ID_BASE - 1, next);
     try {
         localStorage.setItem(GEL_ID_SEQ_KEY, String(next));

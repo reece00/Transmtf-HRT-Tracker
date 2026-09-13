@@ -156,3 +156,21 @@ describe('nextGelProductId — ids are never reused after deletion (F06)', () =>
         vi.unstubAllGlobals();
     });
 });
+
+describe('nextGelProductId — failing writes still advance (final review)', () => {
+    it('combines persisted seq with session memory when setItem throws', async () => {
+        const store = new Map<string, string>([['hrt-gel-id-seq', '1200000000']]);
+        vi.stubGlobal('localStorage', {
+            getItem: (k: string) => store.get(k) ?? null,
+            setItem: () => { throw new Error('quota'); },
+            removeItem: (k: string) => { store.delete(k); },
+        });
+        const { nextGelProductId } = await import('./doseForm');
+        const first = nextGelProductId([]);
+        const second = nextGelProductId([]);
+        const third = nextGelProductId([]);
+        expect(second).toBeGreaterThan(first);
+        expect(third).toBeGreaterThan(second);
+        vi.unstubAllGlobals();
+    });
+});
