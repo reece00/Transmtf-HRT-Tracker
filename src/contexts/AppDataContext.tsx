@@ -498,13 +498,18 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
             setSimulation(null);
             return;
         }
-        const endTimeH = currentTime.getTime() / 3600000 + 24;
+        const nowH = currentTime.getTime() / 3600000;
+        const endTimeH = nowH + 24;
         const gridEndH = simulation && simulation.timeH.length > 0
             ? simulation.timeH[simulation.timeH.length - 1]
             : -Infinity;
         const fresh = simulationForRef.current?.events === events
             && simulationForRef.current?.gelProducts === gelProducts;
-        if (fresh && endTimeH <= gridEndH) return;
+        // F03 final-review fix: skip while the stored grid still covers "now"
+        // with a healthy buffer (>= 12h). Comparing endTimeH (= now + 24h)
+        // against the grid end directly would recompute EVERY minute, because
+        // endTimeH grows with the clock; this recomputes at most ~twice a day.
+        if (fresh && gridEndH - nowH >= 12) return;
 
         const seq = ++simulationSeqRef.current;
         setCustomGelProducts(gelProducts);
