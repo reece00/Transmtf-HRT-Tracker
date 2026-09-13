@@ -95,12 +95,22 @@ export const sanitizeImportedEvents = (raw: unknown, fallbackWeight: number): Sa
         // Dose is strict: null/''/boolean are rejected, never coerced (Number(true)
         // is 1). Negative is meaningless; 0 is only well-formed for patchRemove.
         // A MISSING dose on patchRemove means "removed a patch" → 0 mg.
+        // patchApply in RATE mode also legitimately stores doseMG 0 with the
+        // release rate in extras — both entry forms save it that way, so a
+        // valid backup must round-trip (final review blocker).
         let doseNum: number;
         if (entry.route === Route.patchRemove && entry.doseMG === undefined) {
             doseNum = 0;
         } else {
             const strictDose = toStrictNumber(entry.doseMG);
-            if (strictDose === null || strictDose < 0 || (strictDose === 0 && entry.route !== Route.patchRemove)) {
+            const rateRaw = isRecord(entry.extras)
+                ? (entry.extras as Record<string, unknown>).releaseRateUGPerDay
+                : undefined;
+            const rate = rateRaw === undefined ? null : toStrictNumber(rateRaw);
+            const isPatchRateZero = entry.route === Route.patchApply
+                && strictDose === 0
+                && rate !== null && rate > 0;
+            if (strictDose === null || strictDose < 0 || (strictDose === 0 && entry.route !== Route.patchRemove && !isPatchRateZero)) {
                 rejected.push({ index, reason: 'invalid dose' });
                 return;
             }
