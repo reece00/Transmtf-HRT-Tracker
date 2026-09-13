@@ -633,6 +633,12 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
+    // Singleton lock: a rapid second resolution must not run concurrently with
+    // the first (its finally would release the lock the other resolver needs).
+    if (isSyncingRef.current) {
+      return;
+    }
+
     // True while this resolver still owns the conflict UI and the sync lock.
     let current = true;
     // F10: the remote must explicitly confirm the upload before we stamp sync

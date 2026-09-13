@@ -9,7 +9,9 @@ import NumericKeypad from './NumericKeypad';
 // (fetch errors, aborts, 5xx fallbacks, refresh failure, non-401 verify
 // fallbacks). A wrong PIN instead arrives as the server's own auth message,
 // so anything matching this pattern is a network-type error, not a bad PIN.
-const NETWORK_ERROR_PATTERN = /failed to fetch|networkerror|network error|load failed|request timeout|timeout|http 5|authentication failed|verification failed|verification aborted/i;
+// Match ONLY explicit transport/timeout/5xx sentinels — 'authentication failed'
+// etc. must NOT match, or a 401 wrong-PIN surfaces as a network error (F23 review).
+const NETWORK_ERROR_PATTERN = /failed to fetch|networkerror|network error|load failed|request timeout|timeout|http 5/i;
 
 const SecurityPasswordGate: React.FC = () => {
   const { t } = useTranslation();

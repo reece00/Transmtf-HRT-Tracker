@@ -509,11 +509,17 @@ const BatchDoseModal: React.FC<BatchDoseModalProps> = ({ isOpen, onClose, onSave
         if (previewEvents.length === 0) return;
         // F15: final gate — no invalid object may enter app state even if a
         // preview row was edited into a bad state (NaN time, non-finite dose).
-        // patchRemove rows legitimately carry doseMG 0; every other route
-        // must have a positive dose.
-        const allValid = previewEvents.every(ev =>
-            Number.isFinite(ev.timeH) && Number.isFinite(ev.doseMG)
-            && (ev.route === Route.patchRemove ? ev.doseMG >= 0 : ev.doseMG > 0));
+        // Zero-dose rows are legitimate for patchRemove, and for patchApply in
+        // rate mode (doseMG 0 + releaseRateUGPerDay in extras — the canonical
+        // storage both add-forms use); every other row needs a positive dose.
+        const allValid = previewEvents.every(ev => {
+            if (!Number.isFinite(ev.timeH) || !Number.isFinite(ev.doseMG)) return false;
+            if (ev.doseMG > 0) return true;
+            if (ev.route === Route.patchRemove) return ev.doseMG >= 0;
+            const rate = ev.extras?.[ExtraKey.releaseRateUGPerDay];
+            return ev.route === Route.patchApply && ev.doseMG === 0
+                && typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
+        });
         if (!allValid) {
             showDialog('alert', t('batch.invalid_time'));
             return;

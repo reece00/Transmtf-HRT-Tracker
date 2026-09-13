@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-// Previously the app loaded https://cdn.tailwindcss.com with NO inline
+// Previously the app loaded the Tailwind browser build with NO inline
 // tailwind.config (see index.html history), i.e. the default theme. This
 // local config therefore keeps the default theme and only points the
 // content scanner at the real source files.

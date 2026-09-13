@@ -85,10 +85,11 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
 
           const savedPassword = await getSecurityPassword(user.username);
 
-          // Check LIVE auth state + session again after second async call
+          // Check LIVE auth state + session again after second async call.
+          // On staleness, return WITHOUT touching state — setIsAutoVerifying
+          // may already belong to a newer session's check (F18 re-review).
           if (!isAuthenticatedRef.current || getSessionGeneration() !== generation) {
             console.log('User logged out or switched account during password retrieval, aborting');
-            setIsAutoVerifying(false);
             return;
           }
 
@@ -98,10 +99,10 @@ export const SecurityPasswordProvider: React.FC<{ children: React.ReactNode }> =
             // Auto-verify with saved password
             const verifyResponse = await apiClient.getUserData({ password: savedPassword });
 
-            // Final LIVE auth + session check after verification
+            // Final LIVE auth + session check after verification (same rule:
+            // no state mutation — including the auto-verify flag — when stale).
             if (!isAuthenticatedRef.current || getSessionGeneration() !== generation) {
               console.log('User logged out or switched account during auto-verification, aborting');
-              setIsAutoVerifying(false);
               return;
             }
 

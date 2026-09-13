@@ -805,7 +805,8 @@ const DoseFormModal: React.FC<DoseFormModalProps> = ({ isOpen, onClose, eventToE
 
         // 其余情况（口服 / 舌下 / 凝胶 / 注射，以及贴片“总剂量”模式）记录的是单次给药，
         // 表单没有频率信息，无法按 每日/每周 分级 —— 只显示中性的“本次 X mg”，不评分、不显示参考范围。
-        const rawVal = route === Route.patchApply ? parseFloat(rawDose) : parseFloat(e2Dose);
+        // 非 E2 输入显示用户实际输入的原药质量，不显示换算后的等效 E2 质量（F05 review）。
+        const rawVal = parseFloat(safeEster === Ester.E2 ? e2Dose : rawDose);
         const value = Number.isFinite(rawVal) && rawVal > 0 ? rawVal : null;
         return { config: cfg, level: null, value, showRateHint: route === Route.patchApply, neutral: true as const };
     }, [route, patchMode, patchRate, e2Dose, rawDose, safeEster]);

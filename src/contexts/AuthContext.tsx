@@ -192,7 +192,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     refreshPromiseRef.current = promise;
     return promise;
-  }, [logout]);
+  }, [logout, getSessionGeneration]);
 
   // Initialize auth state from cookies, with silent refresh fallback
   useEffect(() => {

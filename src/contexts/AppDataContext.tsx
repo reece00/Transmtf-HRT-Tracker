@@ -493,6 +493,11 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
     const simulationForRef = useRef<{ events: DoseEvent[]; gelProducts: GelProductSpec[] } | null>(null);
     useEffect(() => {
         if (events.length === 0) {
+            // Bump the sequence BEFORE cancelling: pkWorker.cancel rejects the
+            // in-flight request, but the synchronous fallback path resolves
+            // inline — without this bump a stale result could still apply
+            // after the clear (F07 review).
+            simulationSeqRef.current += 1;
             simulationForRef.current = null;
             pkWorker.cancel('simulation');
             setSimulation(null);
@@ -595,6 +600,19 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
         }
     }, [simulation, personalModel, events, applyE2LearningToCPA, labResults, calibrationModel, applyCPAInhibitionToE2, calibrationMode]);
 
+    // F07 review: on unmount, invalidate every pending compute and terminate
+    // the workers so neither late setState calls nor worker callbacks can
+    // outlive the provider (React 18 warns on updates to unmounted trees;
+    // worker globals would otherwise keep running multi-second PK jobs).
+    useEffect(() => {
+        return () => {
+            simulationSeqRef.current += 1;
+            personalModelSeqRef.current += 1;
+            ciSeqRef.current += 1;
+            pkWorker.cancelAll();
+        };
+    }, []);
+
     // Expose baseline from pre-dose labs so UI can offset the raw sim curve
     // even when no post-dose learning has occurred yet.
     const baselineE2PGmL = useMemo<number | null>(() => {
@@ -610,6 +628,13 @@ export const AppDataProvider: React.FC<{ children: ReactNode }> = ({ children })
     }, [simulation, labResults]);
 
     const resetPersonalModel = useCallback(() => {
+        // F07 review: a replay or CI request still in flight must not land
+        // after the reset — bump the sequences so late responses are dropped,
+        // and terminate the workers so the stale compute stops.
+        personalModelSeqRef.current += 1;
+        ciSeqRef.current += 1;
+        pkWorker.cancel('personalModel');
+        pkWorker.cancel('ci');
         setPersonalModel(null);
         setLastDiagnostics(null);
         setSimCI(null);

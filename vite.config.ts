@@ -40,7 +40,7 @@ export default defineConfig(({ mode }) => {
           },
           workbox: {
             // Tailwind CSS is built locally (tailwind.config.js + postcss.config.js);
-            // the old cdn.tailwindcss.com runtime cache was removed with the CDN.
+            // the old third-party CDN runtime cache was removed with the CDN script.
           }
         })
       ],

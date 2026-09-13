@@ -172,9 +172,13 @@ export const TRANSLATIONS_BASE = {
         "dose.guide.level.high": "高剂量",
         "dose.guide.level.very_high": "超高剂量",
         "dose.guide.level.above": "超出参考范围",
+        "dose.guide.unit.mg": "mg",
         "dose.guide.unit.mg_day": "mg/天",
         "dose.guide.unit.mg_week": "mg/周",
         "dose.guide.unit.ug_day": "µg/天",
+        "dose.guide.single_dose": "本次剂量",
+        "dose.guide.plan_per_day": "计划每日总量",
+        "dose.guide.plan_per_week": "计划每周总量",
 
         "sl.instructions": "尽量避免吞咽，在舌下含服直至达到目标时间。",
         "sl.mode.quick": "快速 (2 分钟)",
@@ -588,6 +592,9 @@ export const TRANSLATIONS_BASE = {
         "security.gate.success": "正在加载您的数据...",
         "security.gate.hint1": "此密码用于加密云端数据",
         "security.gate.hint2": "7天只需输入一次",
+        "security.gate.exit_logout": "退出登录（保留本地数据）",
+        "security.gate.recovery_hint": "忘记密码？退出登录不会删除本地记录。清除浏览器数据将删除本地记录，请先导出备份。",
+        "security.gate.network_error": "网络错误，可重试或退出登录",
 
         // Authorized Data Viewing
 
@@ -660,6 +667,7 @@ export const TRANSLATIONS_BASE = {
 
         // Personal PK Learning System
         "lab.learning_title": "个体化学习",
+        "lab.learning.ekf_reference": "以下为独立 EKF 诊断参考，不代表当前所选模型（OU / Hybrid-MIPD）的拟合状态",
         "lab.learning_desc": "基于贝叶斯 EKF 的个体化药代动力学学习系统，随校准点增多逐步收敛。已启用 Jensen 均值修正：参数不确定性越高，预测曲线中心越会适当上移",
         "lab.learning_obs": "已使用校准点",
         "lab.learning_amplitude": "幅度因子 (exp θₛ)",
@@ -937,9 +945,13 @@ export const TRANSLATIONS_BASE = {
         "dose.guide.level.high": "High dose",
         "dose.guide.level.very_high": "Very high dose",
         "dose.guide.level.above": "Above table range",
+        "dose.guide.unit.mg": "mg",
         "dose.guide.unit.mg_day": "mg/day",
         "dose.guide.unit.mg_week": "mg/week",
         "dose.guide.unit.ug_day": "µg/day",
+        "dose.guide.single_dose": "This dose",
+        "dose.guide.plan_per_day": "Planned daily total",
+        "dose.guide.plan_per_week": "Planned weekly total",
 
         "sl.instructions": "Try not to swallow; hold the tablet/saliva under the tongue until the target time.",
         "sl.mode.quick": "2 min",
@@ -1353,6 +1365,9 @@ export const TRANSLATIONS_BASE = {
         "security.gate.success": "Loading your data...",
         "security.gate.hint1": "This password encrypts your cloud data",
         "security.gate.hint2": "You only need to enter it once every 7 days",
+        "security.gate.exit_logout": "Log out (keep local data)",
+        "security.gate.recovery_hint": "Forgot your PIN? Logging out does not delete your local records. Clearing browser data will delete them — export a backup first.",
+        "security.gate.network_error": "Network error — you can retry or log out",
 
         // Authorized Data Viewing
 
@@ -1425,6 +1440,7 @@ export const TRANSLATIONS_BASE = {
 
         // Personal PK Learning System
         "lab.learning_title": "Individualised Learning",
+        "lab.learning.ekf_reference": "The diagnostics below are an independent EKF reference and do NOT reflect the state of the currently selected model (OU / Hybrid-MIPD)",
         "lab.learning_desc": "Bayesian EKF personalised PK learning — estimates converge with each calibration point. Jensen mean correction enabled: higher parameter uncertainty shifts the central curve upward appropriately",
         "lab.learning_obs": "Calibrations used",
         "lab.learning_amplitude": "Amplitude factor (exp θₛ)",
@@ -1674,9 +1690,13 @@ export const TRANSLATIONS = {
         "dose.guide.level.high": "高劑量",
         "dose.guide.level.very_high": "超高劑量",
         "dose.guide.level.above": "超出參考範圍",
+        "dose.guide.unit.mg": "mg",
         "dose.guide.unit.mg_day": "mg/日",
         "dose.guide.unit.mg_week": "mg/週",
         "dose.guide.unit.ug_day": "µg/日",
+        "dose.guide.single_dose": "本次劑量",
+        "dose.guide.plan_per_day": "計畫每日總量",
+        "dose.guide.plan_per_week": "計畫每週總量",
 
         "sl.instructions": "含在口中並盡量不要吞嚥，直到達成目標時間。",
         "sl.mode.quick": "快速（2 分）",
@@ -1941,6 +1961,14 @@ export const TRANSLATIONS = {
         "account.securityPassword": "安全密碼",
         "account.securityPasswordDesc": "管理用於資料加密的 6 位 PIN",
 
+        // Security gate recovery (zh-TW overrides)
+        "security.gate.exit_logout": "登出（保留本機資料）",
+        "security.gate.recovery_hint": "忘記密碼？登出不會刪除本機紀錄。清除瀏覽器資料將刪除本機紀錄，請先匯出備份。",
+        "security.gate.network_error": "網路錯誤，可重試或登出",
+
+        // Lab learning panel (zh-TW overrides)
+        "lab.learning.ekf_reference": "以下為獨立 EKF 診斷參考，不代表目前所選模型（OU / Hybrid-MIPD）的擬合狀態",
+
         // Share as image (zh-TW overrides)
         "share.imageTitle": "匯出為圖片",
         "share.imageDesc": "生成高解析度橫向圖片，包含目前血藥濃度與完整曲線。",
@@ -2103,9 +2131,13 @@ export const TRANSLATIONS = {
         "dose.guide.level.high": "高用量",
         "dose.guide.level.very_high": "超高用量",
         "dose.guide.level.above": "参考範囲を超過",
+        "dose.guide.unit.mg": "mg",
         "dose.guide.unit.mg_day": "mg/日",
         "dose.guide.unit.mg_week": "mg/週",
         "dose.guide.unit.ug_day": "µg/日",
+        "dose.guide.single_dose": "今回の用量",
+        "dose.guide.plan_per_day": "1日の計画総量",
+        "dose.guide.plan_per_week": "1週間の計画総量",
 
         "sl.instructions": "できるだけ飲み込まず、目標時間まで舌下で保持してください。",
         "sl.mode.quick": "クイック (2分)",
@@ -2289,6 +2321,14 @@ export const TRANSLATIONS = {
         "oidc.setPasswordSuccess": "ログインパスワードを設定しました。",
         "oidc.removePasswordSuccess": "ログインパスワードを削除しました。Transmtf でサインインしてください。",
         "oidc.loading": "処理中...",
+
+        // Security gate recovery (ja overrides)
+        "security.gate.exit_logout": "ログアウト（ローカルデータを保持）",
+        "security.gate.recovery_hint": "パスワードを忘れましたか？ログアウトしてもローカルの記録は削除されません。ブラウザのデータを消去するとローカルの記録も削除されるため、先にバックアップをエクスポートしてください。",
+        "security.gate.network_error": "ネットワークエラー。再試行するか、ログアウトしてください",
+
+        // Lab learning panel (ja overrides)
+        "lab.learning.ekf_reference": "以下は独立した EKF 診断リファレンスであり、現在選択中のモデル（OU / Hybrid-MIPD）の状態を反映していません",
 
         "share.imageTitle": "画像としてエクスポート",
         "share.imageDesc": "現在の血中濃度と完全なチャートを含む高解像度横向き画像を生成します。",
