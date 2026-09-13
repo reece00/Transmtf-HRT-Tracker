@@ -262,7 +262,7 @@ const CustomTooltip = ({ active, payload, label, t, lang, aaLabel = 'CPA', aaUni
                         </div>
                         {ci68Low !== undefined && ci68High !== undefined && (
                             <div className="flex items-center gap-1 ml-1 mt-0.5">
-                                <span className="text-[8px] font-bold text-rose-300 uppercase w-8">{t('chart.ci68_band')}</span>
+                                <span className="shrink-0 whitespace-nowrap text-[8px] font-bold text-rose-300 uppercase">{t('chart.ci68_band')}</span>
                                 <span className="text-[9px] text-rose-400 font-medium">
                                     {ci68Low.toFixed(0)} – {ci68High.toFixed(0)}
                                     <span className="text-[8px] font-normal text-rose-300 ml-0.5">pg/mL</span>
@@ -271,7 +271,7 @@ const CustomTooltip = ({ active, payload, label, t, lang, aaLabel = 'CPA', aaUni
                         )}
                         {ciLow !== undefined && ciHigh !== undefined && (
                             <div className="flex items-center gap-1 ml-1 mt-0.5">
-                                <span className="text-[8px] font-bold uppercase w-8" style={{ color: 'var(--text-tertiary)' }}>{t('chart.ci_band')}</span>
+                                <span className="shrink-0 whitespace-nowrap text-[8px] font-bold uppercase" style={{ color: 'var(--text-tertiary)' }}>{t('chart.ci_band')}</span>
                                 <span className="text-[9px] font-medium" style={{ color: 'var(--text-secondary)' }}>
                                     {ciLow.toFixed(0)} – {ciHigh.toFixed(0)}
                                     <span className="text-[8px] font-normal ml-0.5" style={{ color: 'var(--text-tertiary)' }}>pg/mL</span>
@@ -310,7 +310,7 @@ const CustomTooltip = ({ active, payload, label, t, lang, aaLabel = 'CPA', aaUni
                         </div>
                         {cpaCiLow !== undefined && cpaCiHigh !== undefined && (
                             <div className="flex items-center gap-1 ml-1 mt-0.5">
-                                <span className="text-[8px] font-bold uppercase w-8" style={{ color: 'var(--text-tertiary)' }}>{t('chart.ci_band')}</span>
+                                <span className="shrink-0 whitespace-nowrap text-[8px] font-bold uppercase" style={{ color: 'var(--text-tertiary)' }}>{t('chart.ci_band')}</span>
                                 <span className="text-[9px] font-medium" style={{ color: 'var(--text-secondary)' }}>
                                     {cpaCiLow.toFixed(2)} – {cpaCiHigh.toFixed(2)}
                                     <span className="text-[8px] font-normal ml-0.5" style={{ color: 'var(--text-tertiary)' }}>{aaUnit}</span>
