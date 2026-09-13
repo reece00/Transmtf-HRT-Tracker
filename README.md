@@ -70,9 +70,9 @@ without duplicating formulas.<br>
 
   **舌下服用指导**：基于严格的医学建模，提供详细的“含服时间（Hold Time）”与吸收参数（$\theta$）参考。
 
-* **Privacy First**: All data is stored entirely in your browser's `localStorage`. No data is ever sent to a server.<br>
+* **Privacy First**: All data is stored locally in your browser's `localStorage` by default. If you create an account and sign in, optional automatic cloud sync uploads your encrypted-in-transit data payload to the project server (see `docs/api.md`); the security PIN is verified against the server and forgotten-PIN-encrypted cloud data cannot be recovered by anyone. Review the sync and deployment docs before enabling cloud features.<br>
 
-  **隐私优先**：所有数据都完全存储在你浏览器的 `localStorage` 中，绝不会发送到任何服务器。
+  **隐私优先**：所有数据默认仅存储在你浏览器的 `localStorage` 中。若注册并登录账号，可选的自动云同步会将传输中加密的完整数据载荷上传至项目服务器（见 `docs/api.md`）；安全密码会提交服务端校验，且忘记密码后加密的云端数据无法被任何人恢复。启用云功能前请先阅读同步与部署文档。
 
 * **Internationalization**: Native support for **Simplified Chinese** and **English**, **Cantonese**, **Russian, Ukrainian** and more.<br>
 
