@@ -115,6 +115,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // ── common guards ──
   const canSync = useCallback(() => {
     if (!isAuthenticated || isLogoutInProgress()) return false;
+    // FINAL-REVIEW (blocker 1): while the ownership of the local records is
+    // undecided (new account on a device holding someone else's data), nothing
+    // moves — no pulls, pushes or conflict prompts.
+    if (localStorage.getItem('hrt-data-ownership-pending') === '1') return false;
     if (hasSecurityPassword && !isVerified) return false;
     if (hasSecurityPassword && passwordVerificationFailed) return false;
     if (hasSecurityPassword && !securityPassword) return false;
@@ -259,6 +263,10 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // After a successful push, the cloud's state == what we just uploaded,
       // so record it as the new baseline.
       setCloudBaseline(localData.lastDataUpdated || localData.lastModified, dataHash);
+      // The local data now matches THIS account's cloud copy (blocker 1).
+      if (userRef.current?.username) {
+        localStorage.setItem('hrt-data-owner', userRef.current.username);
+      }
       return true;
     }
 
@@ -343,6 +351,40 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // After applying cloud data locally, our local state == cloud state,
     // so the cloud version we just pulled becomes the new baseline.
     setCloudBaseline(data?.lastDataUpdated || fallbackTimestamp || null, dataHash);
+    // The local data now matches THIS account's cloud copy (blocker 1).
+    if (userRef.current?.username) {
+      localStorage.setItem('hrt-data-owner', userRef.current.username);
+    }
+    window.dispatchEvent(new StorageEvent('storage', { key: 'hrt-data-synced', newValue: Date.now().toString() }));
+  }, []);
+
+  // FINAL-REVIEW (blocker 4): a 'cloud'/'merge' resolution replaces local
+  // storage BEFORE the confirming upload. If that upload then fails, the
+  // original local records must be restored — otherwise a later 'local'
+  // resolution would read the overwritten storage and upload the cloud data
+  // as if it were the user's own choice.
+  const restoreLocalDataFromSnapshot = useCallback((snapshot: ReturnType<typeof getLocalDataSnapshot>, baseline: { updated: string | null; hash: string | null }) => {
+    localStorage.setItem('hrt-events', JSON.stringify(snapshot.events));
+    localStorage.setItem('hrt-weight', String(snapshot.weight));
+    localStorage.setItem('hrt-lab-results', JSON.stringify(snapshot.labResults));
+    localStorage.setItem('hrt-lang', snapshot.lang);
+    localStorage.setItem('hrt-calibration-model', snapshot.calibrationModel);
+    localStorage.setItem('hrt-calibration-mode', snapshot.calibrationMode);
+    localStorage.setItem('hrt-apply-e2-learning-to-cpa', snapshot.applyE2LearningToCPA ? '1' : '0');
+    localStorage.setItem('hrt-apply-cpa-inhibition-to-e2', snapshot.applyCPAInhibitionToE2 ? '1' : '0');
+    localStorage.setItem('hrt-theme-color', snapshot.themeColor);
+    localStorage.setItem('hrt-theme-mode', snapshot.themeMode);
+    localStorage.setItem('hrt-dark-mode', snapshot.darkMode ? '1' : '0');
+    localStorage.setItem('hrt-gel-products', JSON.stringify(snapshot.gelProducts ?? []));
+    if (snapshot.lastModified) localStorage.setItem('hrt-last-modified', snapshot.lastModified);
+    if (snapshot.lastDataUpdated) localStorage.setItem(LAST_DATA_UPDATED_KEY, snapshot.lastDataUpdated);
+    localStorage.setItem('hrt-data-hash', snapshot.dataHash);
+    if (baseline.updated) localStorage.setItem(LAST_KNOWN_CLOUD_UPDATED_KEY, baseline.updated);
+    else localStorage.removeItem(LAST_KNOWN_CLOUD_UPDATED_KEY);
+    if (baseline.hash) localStorage.setItem(LAST_KNOWN_CLOUD_HASH_KEY, baseline.hash);
+    else localStorage.removeItem(LAST_KNOWN_CLOUD_HASH_KEY);
+    // Same event applyCloudToLocal fires, so AppDataContext reloads React
+    // state from the restored storage.
     window.dispatchEvent(new StorageEvent('storage', { key: 'hrt-data-synced', newValue: Date.now().toString() }));
   }, []);
 
@@ -381,8 +423,11 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // — otherwise the stamp/baseline lines after the push would still run
       // for a sync whose session is over.
       const pushAndStayCurrent = async (data: Parameters<typeof pushLocalDataToCloud>[0]): Promise<boolean> => {
-        await pushLocalDataToCloud(data);
-        return getSessionGeneration() === generation && (userRef.current?.username ?? null) === username;
+        const pushed = await pushLocalDataToCloud(data);
+        // Final-review fix: the remote must explicitly confirm the upload
+        // before we stamp sync time — a failed push returns false here so the
+        // stamp lines after each call site are skipped.
+        return pushed && getSessionGeneration() === generation && (userRef.current?.username ?? null) === username;
       };
 
       if (!response.success || !response.data) {
@@ -612,21 +657,39 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // never write old-session data into local storage (F02 re-review).
         current = getSessionGeneration() === generation;
         if (!current) return;
+        const preApplyLocal = getLocalDataSnapshot();
+        const preBaseline = {
+          updated: localStorage.getItem(LAST_KNOWN_CLOUD_UPDATED_KEY),
+          hash: localStorage.getItem(LAST_KNOWN_CLOUD_HASH_KEY),
+        };
         applyCloudToLocal({ ...cloudData, lastModified: now, lastDataUpdated: now }, localData);
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
         pushed = await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
         current = getSessionGeneration() === generation;
+        if (current && !pushed) {
+          // Upload failed: bring the original local records back (blocker 4).
+          restoreLocalDataFromSnapshot(preApplyLocal, preBaseline);
+        }
       } else if (resolution === 'merge' && mergedData) {
         current = getSessionGeneration() === generation;
         if (!current) return;
+        const preApplyLocal = getLocalDataSnapshot();
+        const preBaseline = {
+          updated: localStorage.getItem(LAST_KNOWN_CLOUD_UPDATED_KEY),
+          hash: localStorage.getItem(LAST_KNOWN_CLOUD_HASH_KEY),
+        };
         applyCloudToLocal({ ...mergedData, lastModified: now, lastDataUpdated: now }, localData);
         localStorage.setItem('hrt-last-modified', now);
         localStorage.setItem(LAST_DATA_UPDATED_KEY, now);
         const updatedLocal = getLocalDataSnapshot();
         pushed = await pushLocalDataToCloud({ ...updatedLocal, lastModified: now, lastDataUpdated: now });
         current = getSessionGeneration() === generation;
+        if (current && !pushed) {
+          // Upload failed: bring the original local records back (blocker 4).
+          restoreLocalDataFromSnapshot(preApplyLocal, preBaseline);
+        }
       }
 
       if (!current) {
@@ -662,7 +725,7 @@ export const CloudSyncProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isSyncingRef.current = false;
       setIsSyncing(false);
     }
-  }, [pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot, getSessionGeneration, updatePendingConflict]);
+  }, [pushLocalDataToCloud, applyCloudToLocal, getLocalDataSnapshot, getSessionGeneration, updatePendingConflict, restoreLocalDataFromSnapshot]);
 
   // ── Watch for local data changes → trigger unified sync ──
   useEffect(() => {
