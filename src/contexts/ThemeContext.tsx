@@ -160,10 +160,6 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const wasExternal = externalModeValue.current === themeMode;
     externalModeValue.current = null;
     if (wasExternal) return;
-    const now = new Date().toISOString();
-    localStorage.setItem('hrt-last-modified', now);
-    localStorage.setItem('hrt-last-data-updated', now);
-    window.dispatchEvent(new CustomEvent('hrt-local-data-updated', { detail: { key: THEME_MODE_KEY } }));
   }, [themeMode]);
 
   // Listen for storage changes (cross-tab / cloud sync)
