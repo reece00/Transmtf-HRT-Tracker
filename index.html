@@ -18,7 +18,7 @@
         (function () {
             try {
                 var mode = localStorage.getItem('hrt-theme-mode');
-                if (mode !== 'system' && mode !== 'light' && mode !== 'dark') mode = 'light';
+                if (mode !== 'system' && mode !== 'light' && mode !== 'dark') mode = 'system';
                 var dark = mode === 'system'
                     ? window.matchMedia('(prefers-color-scheme: dark)').matches
                     : mode === 'dark';

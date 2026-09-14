@@ -76,7 +76,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => {
     const savedMode = localStorage.getItem(THEME_MODE_KEY);
     if (isThemeMode(savedMode)) return savedMode;
-    return 'light';
+    return 'system';
   });
   const [systemIsDark, setSystemIsDark] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches
