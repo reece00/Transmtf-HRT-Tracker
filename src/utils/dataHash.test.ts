@@ -21,15 +21,22 @@ describe('computeDataHash schema versioning', () => {
         expect(a).not.toBe(b);
     });
 
-    it('projectForSync fills every synced field with a default', () => {
+    it('projects exactly the synced fields with defaults', () => {
         const p = projectForSync({});
+        expect(Object.keys(p).sort()).toEqual([
+            'applyCPAInhibitionToE2',
+            'applyE2LearningToCPA',
+            'calibrationMode',
+            'calibrationModel',
+            'events',
+            'gelProducts',
+            'labResults',
+            'lang',
+            'themeColor',
+            'weight',
+        ]);
         expect(p.gelProducts).toEqual([]);
         expect(p.themeColor).toBe('');
         expect(p.weight).toBe(0);
-    });
-    it('ignores local-only theme mode and legacy dark mode', () => {
-        const light = computeDataHash({ ...base, themeMode: 'light', darkMode: false });
-        const dark = computeDataHash({ ...base, themeMode: 'dark', darkMode: true });
-        expect(light).toBe(dark);
     });
 });

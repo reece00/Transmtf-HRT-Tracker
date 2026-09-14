@@ -8,10 +8,6 @@ type HashableData = {
     applyE2LearningToCPA?: boolean;
     applyCPAInhibitionToE2?: boolean;
     themeColor?: string;
-    // Accepted for callers that build a full local snapshot, but intentionally
-    // excluded from projectForSync because theme mode is device-local.
-    themeMode?: string;
-    darkMode?: boolean;
     gelProducts?: unknown[];
 };
 
