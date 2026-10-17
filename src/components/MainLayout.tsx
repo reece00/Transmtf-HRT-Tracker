@@ -114,6 +114,8 @@ const MainLayout: React.FC = () => {
                 confirmText: t('sync.ownership_upload'),
                 cancelText: t('sync.ownership_clear'),
                 thirdOption: t('sync.ownership_later'),
+                dismissValue: 'third',
+                initialFocus: 'last',
             });
             if (choice === 'confirm') {
                 // Upload: sync resumes and pushes the local records to this account.
